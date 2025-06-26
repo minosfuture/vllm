@@ -4,6 +4,7 @@
 from typing import Callable, Optional
 
 import torch
+import torch.distributed as dist
 
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm import _custom_ops as ops
@@ -168,6 +169,10 @@ def run_cutlass_moe_fp8(
                             device=device,
                             dtype=torch.int64)
 
+    try:
+        local_rank = dist.get_rank() % torch.cuda.device_count()
+    except Exception:
+        local_rank = 0
     if use_batched_format:
         c1 = _resize_cache(workspace13, (local_E * padded_M, N * 2))
         c2 = _resize_cache(workspace2, (local_E * padded_M, N))
@@ -176,6 +181,7 @@ def run_cutlass_moe_fp8(
         c1 = _resize_cache(workspace13, (M * topk, N * 2))
         c2 = _resize_cache(workspace2, (M * topk, N))
         c3 = _resize_cache(workspace13, (M * topk, K))
+        c1.random_()
 
     if expert_map is not None:
         c1.fill_(0)
@@ -183,18 +189,64 @@ def run_cutlass_moe_fp8(
     ops.cutlass_moe_mm(c1, a1q, w1, a1q_scale, w1_scale, expert_offsets,
                        problem_sizes1, ab_strides1, ab_strides1, c_strides1,
                        per_act_token, per_out_ch)
-
+    c1_clone = c1.clone()
     activation_callable(c2, c1)
-
     a2q, a2q_scale = ops.scaled_fp8_quant(
         c2, a2_scale, use_per_token_if_dynamic=per_act_token)
-
     if expert_map is not None:
         c3.fill_(0)
-
     ops.cutlass_moe_mm(c3, a2q, w2, a2q_scale, w2_scale, expert_offsets,
                        problem_sizes2, ab_strides2, ab_strides2, c_strides2,
                        per_act_token, per_out_ch)
+    c3_clone = c3.clone()
+
+    c1.fill_(0)
+    ops.cutlass_moe_mm(c1, a1q, w1, a1q_scale, w1_scale, expert_offsets,
+                       problem_sizes1, ab_strides1, ab_strides1, c_strides1,
+                       per_act_token, per_out_ch)
+    c1_clone2 = c1.clone()
+    activation_callable(c2, c1)
+    a2q, a2q_scale = ops.scaled_fp8_quant(
+        c2, a2_scale, use_per_token_if_dynamic=per_act_token)
+    if expert_map is not None:
+        c3.fill_(0)
+    ops.cutlass_moe_mm(c3, a2q, w2, a2q_scale, w2_scale, expert_offsets,
+                       problem_sizes2, ab_strides2, ab_strides2, c_strides2,
+                       per_act_token, per_out_ch)
+
+    diff = torch.abs(c3_clone - c3)
+    if local_rank == 0 and torch.count_nonzero(diff) > 0:
+        print("===================\ndbg: c1.fill_(0.2)")
+        print(f"c1 shape {c1.shape} dtype {c1.dtype}")
+        print(f"a1q shape {a1q.shape} dtype {a1q.dtype}")
+        print(f"w1 shape {w1.shape} dtype {w1.dtype}")
+        print(f"expert_offsets shape: {expert_offsets.shape}")
+        print(
+            f"a1q_scale: {a1q_scale[:2]}\nw1_scale: {w1_scale[:2]}\nexpert_offsets: {expert_offsets}\n"
+            f"problem_sizes1: {problem_sizes1[:4]}\nab_strides1: {ab_strides1[:2]}\nc_strides1: {c_strides1[:2]}\n"
+            f"per_act_token: {per_act_token}, per_out_ch:{per_out_ch},\n"
+            f"topk_ids: {local_topk_ids}")
+        print(f"c2 shape {c2.shape} dtype {c2.dtype}")
+        print(f"a2q shape {a2q.shape} dtype {a2q.dtype}")
+        print(f"w2 shape {w2.shape} dtype {w2.dtype}")
+        print(f"c3 shape {c3.shape} dtype {c3.dtype}")
+        print(
+            f"a2q_scale: {a2q_scale[:2]}\nw2_scale: {w2_scale[:2]}\n"
+            f"problem_sizes2: {problem_sizes2[:4]}\n ab_strides2: {ab_strides2[:2]}\nc_strides2: {c_strides2[:2]}\n"
+            f"per_act_token: {per_act_token}, per_out_ch:{per_out_ch},\n")
+        print(f"c1 {c1[:4]}")
+        print(f"c1_clone {c1_clone[:4]}")
+        print(f"c1_clone2 {c1_clone2[:4]}")
+        diff_indices = torch.abs(c1_clone2 - c1_clone).nonzero()[:4][:4]
+        print(f"c1 diff {diff_indices}")
+        print(f"diff c1_clone {c1_clone[diff_indices]}")
+        print(f"diff c1_clone2 {c1_clone2[diff_indices]}")
+        print(f"c2 {c2[:4]}")
+        print(f"a2q: {a2q[:4]}")
+        print(f"c3: {c3[:4]}")
+        print(f"c3_clone: {c3_clone[:4]}")
+        print("diff (first 4 elems): ", diff[0, :4])
+        print("diff (last  4 elems): ", diff[0, -4:])
 
     if use_batched_format:
         output.copy_(c3.reshape(local_E, padded_M, K), non_blocking=True)
@@ -202,6 +254,9 @@ def run_cutlass_moe_fp8(
         # We can't do this inplace because output may point to the same tensor
         # as c3.
         output.copy_(c3[c_map].view(M * topk, K), non_blocking=True)
+        if local_rank == 0 and torch.count_nonzero(diff) > 0:
+            print(f"cmap: {c_map[:8]}")
+            print(f"output: {output[:8]}")
 
 
 # TODO (bnell): split class batched vs. non-batched?

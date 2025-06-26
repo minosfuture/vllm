@@ -507,7 +507,9 @@ class FusedMoEModularKernel(torch.nn.Module):
                         expert_num_tokens=expert_num_tokens,
                     )
 
+        #print("output modular_kernel before finalize: ", output)
         self.prepare_finalize.finalize(output, fused_out, topk_weights,
                                        topk_ids, apply_router_weight_on_input)
 
+        #print("output modular_kernel: ", output)
         return output

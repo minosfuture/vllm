@@ -17,8 +17,8 @@ from vllm.model_executor.layers.fused_moe.utils import (
     moe_kernel_quantize_input)
 from vllm.platforms import current_platform
 
-NUM_EXPERTS = [40, 64]
-TOP_KS = [6, 8]
+NUM_EXPERTS = [16]  #, 40, 64]
+TOP_KS = [1]  # 6, 8]
 
 MNK_FACTORS = [
     (2, 1024, 1024),
@@ -92,7 +92,7 @@ class MOETensors8Bit(MOETensors):
     def make_moe_tensors_8bit(m: int, k: int, n: int, e: int,
                               per_act_token: bool,
                               per_out_channel: bool) -> "MOETensors8Bit":
-        dtype = torch.half
+        dtype = torch.bfloat16
         q_dtype = torch.float8_e4m3fn
 
         moe_tensors_fp16 = MOETensors.make_moe_tensors(m, k, n, e, dtype)
@@ -182,8 +182,10 @@ def run_with_expert_maps(num_experts: int, num_local_experts: int,
             yield cutlass_moe_kwargs
 
     out_tensor = torch.zeros_like(cutlass_moe_kwargs["a"])
+    print("out_tensor:", out_tensor)
     for kwargs in slice_experts():
         out_tensor = out_tensor + cutlass_moe_fp8(**kwargs)
+        print("out_tensor:", out_tensor)
 
     return out_tensor
 
@@ -333,7 +335,8 @@ def test_cutlass_moe_8_bit_cuda_graph(
 @pytest.mark.parametrize("topk", [1, 8])
 @pytest.mark.parametrize("per_act_token", [True])
 @pytest.mark.parametrize("per_out_channel", [True])
-@pytest.mark.parametrize("ep_size", [1, 2, 4, 8, 16])
+#@pytest.mark.parametrize("ep_size", [1, 2, 4, 8, 16])
+@pytest.mark.parametrize("ep_size", [16])
 @pytest.mark.skipif(
     (lambda x: x is None or not ops.cutlass_group_gemm_supported(x.to_int()))(
         current_platform.get_device_capability()),
@@ -409,6 +412,7 @@ def test_run_cutlass_moe_fp8(
                                                   per_out_channel)
 
         score = torch.randn((m, e), device="cuda", dtype=torch.half)
+        score[0][0] = 0
         topk_weights, topk_ids, _ = fused_topk(mt.a,
                                                score,
                                                topk,

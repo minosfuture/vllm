@@ -3,6 +3,7 @@
 from typing import Optional
 
 import torch
+import torch.distributed as dist
 
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm.model_executor.layers.fused_moe.moe_permute_unpermute import (
@@ -65,5 +66,15 @@ class MoEPrepareAndFinalizeNoEP(mk.FusedMoEPrepareAndFinalize):
         topk_ids: torch.Tensor,
         apply_router_weight_on_input: bool,
     ) -> None:
+        try:
+            local_rank = dist.get_rank() % torch.cuda.device_count()
+        except Exception:
+            local_rank = 0
+        #if local_rank == 0:
+        #    print(f"""
+        #    output: {output},
+        #    fused_expert_output: {fused_expert_output},
+        #    topk_weights: {topk_weights},
+        #    apply_router_weight_on_input: {apply_router_weight_on_input}""")
         _moe_unpermute_and_reduce(output, fused_expert_output, None,
                                   topk_weights, apply_router_weight_on_input)
