@@ -18,7 +18,7 @@ mkdir -p "$ROOT_DIR"
 GDR_HOME="$ROOT_DIR/gdrcopy"
 UCX_HOME="$ROOT_DIR/ucx"
 NIXL_HOME="$ROOT_DIR/nixl"
-CUDA_HOME=/usr/local/cuda
+CUDA_HOME=/usr/local/cuda-12.8
 
 export PATH="$GDR_HOME/bin:$UCX_HOME/bin:$NIXL_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$GDR_HOME/lib:$UCX_HOME/lib:$NIXL_HOME/lib/$ARCH-linux-gnu:$LD_LIBRARY_PATH"
@@ -29,9 +29,13 @@ cd "$TEMP_DIR"
 
 pip install meson ninja pybind11
 
+fbget() {
+  wget $(fwdproxy-config wget) $1
+}
+
 if [ ! -e "/dev/gdrdrv" ] || [ "$FORCE" = true ]; then
     echo "Installing gdrcopy\n"
-    wget https://github.com/NVIDIA/gdrcopy/archive/refs/tags/v2.5.tar.gz
+    fbget https://github.com/NVIDIA/gdrcopy/archive/refs/tags/v2.5.tar.gz
     tar xzf v2.5.tar.gz; rm v2.5.tar.gz
     cd gdrcopy-2.5
     make prefix=$GDR_HOME CUDA=$CUDA_HOME all install
@@ -51,7 +55,7 @@ fi
 
 if ! command -v ucx_info &> /dev/null || [ "$FORCE" = true ]; then
     echo "Installing UCX"
-    wget https://github.com/openucx/ucx/releases/download/v1.18.0/ucx-1.18.0.tar.gz
+    fbget https://github.com/openucx/ucx/releases/download/v1.18.0/ucx-1.18.0.tar.gz
     tar xzf ucx-1.18.0.tar.gz; rm ucx-1.18.0.tar.gz
     cd ucx-1.18.0
     
@@ -73,12 +77,12 @@ if ! command -v ucx_info &> /dev/null || [ "$FORCE" = true ]; then
                 --enable-devel-headers             \
                 --with-cuda=$CUDA_HOME             \
                 --with-dm                          \
-                --with-gdrcopy=$GDR_HOME           \
                 --with-verbs                       \
                 --enable-mt                        \
                 $MLX_OPTS
+                #--with-gdrcopy=$GDR_HOME           \
     make -j
-    make -j install-strip
+    sudo make -j install-strip
     
     if $SUDO; then
         echo "Running ldconfig with sudo"
@@ -95,10 +99,10 @@ fi
 
 if ! command -v nixl_test &> /dev/null || [ "$FORCE" = true ]; then
     echo "Installing NIXL"
-    wget https://github.com/ai-dynamo/nixl/archive/refs/tags/0.2.0.tar.gz
+    fbget https://github.com/ai-dynamo/nixl/archive/refs/tags/0.2.0.tar.gz
     tar xzf 0.2.0.tar.gz; rm 0.2.0.tar.gz
     cd nixl-0.2.0
-    meson setup build --prefix=$NIXL_HOME -Ducx_path=$UCX_HOME
+    meson setup build --prefix=$NIXL_HOME -Ducx_path=$UCX_HOME  -Dgds_path=$CUDA_HOME/targets/x86_64-linux/
     cd build
     ninja
     ninja install
