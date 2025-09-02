@@ -5,12 +5,12 @@ import enum
 import functools
 from abc import abstractmethod
 from dataclasses import dataclass, make_dataclass
-from typing import Any, ClassVar, Generic, Optional, TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Optional, TypeVar
 
 import numpy as np
 import torch
 
-from vllm.config import get_layers_from_vllm_config, VllmConfig
+from vllm.config import VllmConfig, get_layers_from_vllm_config
 from vllm.utils import cdiv
 
 if TYPE_CHECKING:
@@ -22,8 +22,7 @@ import vllm.envs as envs
 from vllm.attention.backends.abstract import AttentionBackend
 from vllm.attention.layer import Attention
 from vllm.distributed.kv_transfer.kv_connector.utils import (
-    get_kv_connector_cache_layout,
-)
+    get_kv_connector_cache_layout)
 from vllm.logger import init_logger
 from vllm.v1.kv_cache_interface import AttentionSpec
 
@@ -81,6 +80,12 @@ class UbatchSlice:
     is_prefill: bool = False  # Whether this ubatch contains prefill operations
     max_query_len: int = 1  # Maximum query length in this ubatch
 
+    # New fields to support non-consecutive request/token indices
+    request_indices: Optional[
+        torch.Tensor] = None  # Specific request indices (alternative to slice)
+    token_indices: Optional[
+        torch.Tensor] = None  # Specific token indices (alternative to slice)
+
 
 @dataclass
 class UbatchWorkloadInfo:
@@ -107,15 +112,13 @@ def slice_query_start_locs(
     Note: This function creates a new tensor to hold the new query_start_locs.
     This will break cudagraph compatibility.
     """
-    return (
-        query_start_loc[request_slice.start : request_slice.stop + 1]
-        - query_start_loc[request_slice.start]
-    )
+    return (query_start_loc[request_slice.start:request_slice.stop + 1] -
+            query_start_loc[request_slice.start])
 
 
 def _make_metadata_with_slice(
-    ubatch_slice: UbatchSlice, attn_metadata: CommonAttentionMetadata
-) -> CommonAttentionMetadata:
+        ubatch_slice: UbatchSlice,
+        attn_metadata: CommonAttentionMetadata) -> CommonAttentionMetadata:
     """
     This function creates a new CommonAttentionMetadata that corresponds to
     the requests included in ubatch_slice
@@ -124,26 +127,25 @@ def _make_metadata_with_slice(
     request_slice = ubatch_slice.request_slice
     token_slice = ubatch_slice.token_slice
 
-    query_start_loc = slice_query_start_locs(
-        attn_metadata.query_start_loc, request_slice
-    )
+    query_start_loc = slice_query_start_locs(attn_metadata.query_start_loc,
+                                             request_slice)
     assert len(query_start_loc) >= 2, (
-        f"query_start_loc must have at least 2 elements, " f"got {len(query_start_loc)}"
-    )
+        f"query_start_loc must have at least 2 elements, "
+        f"got {len(query_start_loc)}")
     query_start_loc_cpu = slice_query_start_locs(
-        attn_metadata.query_start_loc_cpu, request_slice
-    )
+        attn_metadata.query_start_loc_cpu, request_slice)
 
     seq_lens = attn_metadata.seq_lens[request_slice]
     seq_lens_cpu = attn_metadata.seq_lens_cpu[request_slice]
     max_seq_len = int(seq_lens_cpu.max())
-    num_computed_tokens_cpu = attn_metadata.num_computed_tokens_cpu[request_slice]
+    num_computed_tokens_cpu = attn_metadata.num_computed_tokens_cpu[
+        request_slice]
 
     num_requests = request_slice.stop - request_slice.start
     num_actual_tokens = token_slice.stop - token_slice.start
     max_query_len = int(
-        torch.max(torch.abs(query_start_loc_cpu[1:] - query_start_loc_cpu[:-1])).item()
-    )
+        torch.max(torch.abs(query_start_loc_cpu[1:] -
+                            query_start_loc_cpu[:-1])).item())
 
     block_table_tensor = attn_metadata.block_table_tensor[request_slice]
     slot_mapping = attn_metadata.slot_mapping[token_slice]
@@ -175,7 +177,8 @@ def split_attn_metadata(
     """
     results = []
     for ubatch_slice in ubatch_slices:
-        results.append(_make_metadata_with_slice(ubatch_slice, common_attn_metadata))
+        results.append(
+            _make_metadata_with_slice(ubatch_slice, common_attn_metadata))
     return results
 
 
@@ -238,16 +241,14 @@ class AttentionMetadataBuilder(abc.ABC, Generic[M]):
         raise NotImplementedError
 
     def build_for_cudagraph_capture(
-        self, common_attn_metadata: CommonAttentionMetadata
-    ) -> M:
+            self, common_attn_metadata: CommonAttentionMetadata) -> M:
         """
         Build attention metadata for CUDA graph capture. Uses build by default.
         Subclasses that override this method should call self.build or
         super().build_for_cudagraph_capture.
         """
-        return self.build(
-            common_prefix_len=0, common_attn_metadata=common_attn_metadata
-        )
+        return self.build(common_prefix_len=0,
+                          common_attn_metadata=common_attn_metadata)
 
     def build_for_drafting(
         self,
@@ -334,8 +335,8 @@ class PerLayerParameters:
 
 
 def get_per_layer_parameters(
-    vllm_config: VllmConfig, layer_names: list[str], cls_: type["AttentionImpl"]
-) -> dict[str, PerLayerParameters]:
+        vllm_config: VllmConfig, layer_names: list[str],
+        cls_: type["AttentionImpl"]) -> dict[str, PerLayerParameters]:
     """
     Scan layers in `layer_names` and determine some hyperparameters
     to use during `plan`.
@@ -355,16 +356,15 @@ def get_per_layer_parameters(
         sm_scale = impl.scale
         has_sinks = getattr(impl, "sinks", None) is not None
 
-        per_layer_params[key] = PerLayerParameters(
-            window_left, logits_soft_cap, sm_scale, has_sinks
-        )
+        per_layer_params[key] = PerLayerParameters(window_left,
+                                                   logits_soft_cap, sm_scale,
+                                                   has_sinks)
 
     return per_layer_params
 
 
 def infer_global_hyperparameters(
-    per_layer_params: dict[str, PerLayerParameters]
-) -> PerLayerParameters:
+        per_layer_params: dict[str, PerLayerParameters]) -> PerLayerParameters:
     """
     Currently, FlashInfer backend other than trtllm-gen
     only support models in which all layers share
@@ -388,14 +388,12 @@ def infer_global_hyperparameters(
             if params.window_left != global_params.window_left:
                 raise ValueError(
                     "Window left is not the same for all layers. "
-                    "One potential fix is to set disable_sliding_window=True"
-                )
+                    "One potential fix is to set disable_sliding_window=True")
             assert params == global_params, (
                 "FlashInfer backend currently only supports models in which all"
                 "layers share the same values "
                 "for the following hyperparameters:"
-                "`window_left`, `logits_soft_cap`, `sm_scale`."
-            )
+                "`window_left`, `logits_soft_cap`, `sm_scale`.")
 
     return global_params
 
@@ -477,10 +475,11 @@ def make_local_attention_virtual_batches(
     #   new_tokens_in_first_block = [2, 1, 4]
     #   local_blocks = [2, 4, 2]
     q_tokens_in_first_block = np.minimum(
-        attn_chunk_size - ((seq_lens_np - q_seqlens) % attn_chunk_size), q_seqlens
-    ).astype(np.int32)
+        attn_chunk_size - ((seq_lens_np - q_seqlens) % attn_chunk_size),
+        q_seqlens).astype(np.int32)
     tokens_in_last_block = attn_chunk_size + (seq_lens_np % -attn_chunk_size)
-    local_blocks = 1 + cdiv(q_seqlens - q_tokens_in_first_block, attn_chunk_size)
+    local_blocks = 1 + cdiv(q_seqlens - q_tokens_in_first_block,
+                            attn_chunk_size)
 
     # Once we know the number of local blocks we can compute the request spans
     #  for each batch idx, we can figure out the number of "virtual" requests we
@@ -501,13 +500,14 @@ def make_local_attention_virtual_batches(
     rarange = np.repeat(local_blocks, local_blocks) - arange - 1
     # Then we can compute the seqlens_q_local, handling the fact that the
     #  first and last blocks could be partial
-    seqlens_q_local = np.repeat(q_seqlens - q_tokens_in_first_block, local_blocks)
+    seqlens_q_local = np.repeat(q_seqlens - q_tokens_in_first_block,
+                                local_blocks)
     # set the first block since this may be a partial block
     seqlens_q_local[arange == 0] = q_tokens_in_first_block
     # set the remaining blocks
     seqlens_q_local[arange > 0] = np.minimum(
-        seqlens_q_local - attn_chunk_size * (arange - 1), attn_chunk_size
-    )[arange > 0]
+        seqlens_q_local - attn_chunk_size * (arange - 1),
+        attn_chunk_size)[arange > 0]
 
     # convert from q_seqlens to cu_seqlens_q
     cu_seqlens_q_local = np.empty(virtual_batches + 1, dtype=np.int32)
@@ -519,21 +519,22 @@ def make_local_attention_virtual_batches(
     #  batch
     # For our example this will be:
     #   seqlens_k_local = [4, 2, 4, 4, 4, 1, 4, 1]
-    seqlens_k_local = np.full(cu_num_blocks[-1], attn_chunk_size, dtype=np.int32)
+    seqlens_k_local = np.full(cu_num_blocks[-1],
+                              attn_chunk_size,
+                              dtype=np.int32)
     seqlens_k_local[cu_num_blocks - 1] = tokens_in_last_block
     num_computed_tokens_local = seqlens_k_local - seqlens_q_local
 
     k_seqstarts_absolute = np.repeat(seq_lens_np, local_blocks) - (
-        rarange * attn_chunk_size + np.repeat(tokens_in_last_block, local_blocks)
-    )
+        rarange * attn_chunk_size +
+        np.repeat(tokens_in_last_block, local_blocks))
     # For the example the local attention blocks start at:
     #                           _b0_  _____b1_____  _b2_
     #   k_seqstarts_absolute = [0, 4, 4, 8, 12, 16, 4, 8]
     block_starts = k_seqstarts_absolute // block_size
     assert attn_chunk_size % block_size == 0, (
         f"attn_chunk_size {attn_chunk_size} is not "
-        f"divisible by block_size {block_size}"
-    )
+        f"divisible by block_size {block_size}")
     pages_per_local_batch = attn_chunk_size // block_size
 
     # Create a block_table for the local attention blocks
@@ -554,17 +555,16 @@ def make_local_attention_virtual_batches(
     #     [ 22, 23 ], < local-batch 6, (batch 2, starting from k[4])
     #     [ 24, 25 ], < local-batch 7, (batch 2, starting from k[8])
     #   ]
-    block_indices = block_starts[:, None] + np.arange(
-        pages_per_local_batch, dtype=np.int32
-    )
-    block_indices = block_indices.reshape(-1).clip(max=block_table.shape[1] - 1)
+    block_indices = block_starts[:, None] + np.arange(pages_per_local_batch,
+                                                      dtype=np.int32)
+    block_indices = block_indices.reshape(-1).clip(max=block_table.shape[1] -
+                                                   1)
     batch_indices = np.repeat(
         np.arange(actual_batch_size, dtype=np.int32),
         local_blocks * pages_per_local_batch,
     )
-    block_table_local = block_table[batch_indices, block_indices].view(
-        virtual_batches, -1
-    )
+    block_table_local = block_table[batch_indices,
+                                    block_indices].view(virtual_batches, -1)
 
     query_start_loc_cpu = torch.from_numpy(cu_seqlens_q_local)
     seq_lens_cpu = torch.from_numpy(seqlens_k_local)
@@ -572,7 +572,8 @@ def make_local_attention_virtual_batches(
 
     return CommonAttentionMetadata(
         query_start_loc_cpu=query_start_loc_cpu,
-        query_start_loc=query_start_loc_cpu.to(device=device, non_blocking=True),
+        query_start_loc=query_start_loc_cpu.to(device=device,
+                                               non_blocking=True),
         seq_lens_cpu=seq_lens_cpu,
         seq_lens=seq_lens_cpu.to(device=device, non_blocking=True),
         num_computed_tokens_cpu=torch.from_numpy(num_computed_tokens_local),
@@ -596,9 +597,8 @@ def subclass_attention_backend(
     """
     name: str = name_prefix + attention_backend_cls.__name__  # type: ignore
 
-    return type(
-        name, (attention_backend_cls,), {"get_builder_cls": lambda: builder_cls}
-    )
+    return type(name, (attention_backend_cls, ),
+                {"get_builder_cls": lambda: builder_cls})
 
 
 def split_decodes_and_prefills(
@@ -721,13 +721,12 @@ def subclass_attention_metadata(
     Return a new subclass of `metadata_cls` with additional fields
     """
     name: str = name_prefix + metadata_cls.__name__  # type: ignore
-    Wrapped = make_dataclass(name, fields, bases=(metadata_cls,))
+    Wrapped = make_dataclass(name, fields, bases=(metadata_cls, ))
     return Wrapped
 
 
 def make_kv_sharing_fast_prefill_attention_metadata(
-    metadata_cls: Any,
-) -> Any:
+    metadata_cls: Any, ) -> Any:
     """
     Return a new subclass of `metadata_cls` for fast prefill
     """
@@ -759,9 +758,9 @@ def estimate_compute_complexity(query_len: int, seq_len: int) -> float:
         return float(query_len * seq_len)
 
 
-def analyze_workload(
-    query_lens: torch.Tensor, seq_lens: torch.Tensor, decode_threshold: int = 1
-) -> UbatchWorkloadInfo:
+def analyze_workload(query_lens: torch.Tensor,
+                     seq_lens: torch.Tensor,
+                     decode_threshold: int = 1) -> UbatchWorkloadInfo:
     """
     Analyze the workload characteristics for intelligent ubatch splitting.
 
@@ -806,98 +805,191 @@ def analyze_workload(
 
 
 def create_balanced_ubatch_slices(
-    workload_info: UbatchWorkloadInfo,
-    num_ubatches: int = 2,
-    balance_strategy: str = "compute_complexity",
-) -> list[UbatchSlice]:
+        workload_info: UbatchWorkloadInfo,
+        num_ubatches: int = 2,
+        balance_strategy: str = "compute_complexity") -> list[UbatchSlice]:
     """
     Create balanced ubatch slices based on workload characteristics.
 
+    This function supports arbitrary number of ubatches and maintains consecutive
+    slices required by the existing UbatchSlice infrastructure.
+
     Args:
         workload_info: Analysis of the current workload
-        num_ubatches: Number of micro-batches to create (default: 2)
+        num_ubatches: Number of micro-batches to create
         balance_strategy: Strategy for balancing ("compute_complexity" or "tokens")
 
     Returns:
         List of UbatchSlice objects for balanced micro-batches
     """
-    if num_ubatches != 2:
-        raise NotImplementedError("Currently only supports 2 micro-batches")
-
     num_requests = workload_info.total_requests
-    if num_requests < 2:
-        # If we have fewer than 2 requests, just create a single ubatch
-        return [
-            UbatchSlice(
-                request_slice=slice(0, num_requests),
-                token_slice=slice(0, workload_info.total_tokens),
-                compute_complexity=float(torch.sum(workload_info.compute_complexities)),
-                query_lens=workload_info.query_lens,
-                is_prefill=workload_info.prefill_requests > 0,
-                max_query_len=int(torch.max(workload_info.query_lens)),
-            )
-        ]
+    if num_requests < num_ubatches:
+        # If we have fewer requests than ubatches, create one ubatch per request
+        return _create_single_request_ubatches(workload_info)
 
-    # For balanced splitting, we want to minimize the difference in compute complexity
-    # or token counts between ubatches
+    # Check if this is a mixed workload that needs intelligent splitting
+    has_mixed_workload = (workload_info.prefill_requests > 0
+                          and workload_info.decode_requests > 0)
 
+    if not has_mixed_workload:
+        # For uniform workloads (all decode or all prefill), use simple consecutive splitting
+        return _create_simple_consecutive_ubatch_slices(
+            workload_info, num_ubatches)
+
+    # For mixed workloads, use balanced splitting
+    return _create_balanced_consecutive_ubatch_slices(workload_info,
+                                                      num_ubatches,
+                                                      balance_strategy)
+
+
+def _create_single_request_ubatches(
+        workload_info: UbatchWorkloadInfo) -> list[UbatchSlice]:
+    """Create one ubatch per request when we have very few requests."""
+    ubatch_slices = []
+    token_offset = 0
+
+    for i in range(workload_info.total_requests):
+        request_tokens = int(workload_info.query_lens[i])
+
+        ubatch_slice = UbatchSlice(
+            request_slice=slice(i, i + 1),
+            token_slice=slice(token_offset, token_offset + request_tokens),
+            compute_complexity=float(workload_info.compute_complexities[i]),
+            query_lens=workload_info.query_lens[i:i + 1],
+            is_prefill=workload_info.query_lens[i] > 1,
+            max_query_len=int(workload_info.query_lens[i]))
+        ubatch_slices.append(ubatch_slice)
+        token_offset += request_tokens
+
+    return ubatch_slices
+
+
+def _create_simple_consecutive_ubatch_slices(
+        workload_info: UbatchWorkloadInfo,
+        num_ubatches: int) -> list[UbatchSlice]:
+    """Create consecutive ubatch slices for uniform workloads."""
+    num_requests = workload_info.total_requests
+    total_tokens = workload_info.total_tokens
+
+    ubatch_slices = []
+
+    for i in range(num_ubatches):
+        # Calculate request boundaries
+        request_start = (i * num_requests) // num_ubatches
+        request_end = ((i + 1) * num_requests) // num_ubatches
+
+        # Calculate token boundaries based on actual tokens in this request range
+        if i == 0:
+            token_start = 0
+        else:
+            token_start = int(
+                torch.sum(workload_info.query_lens[:request_start]))
+        token_end = int(torch.sum(workload_info.query_lens[:request_end]))
+
+        # Calculate properties for this slice
+        slice_query_lens = workload_info.query_lens[request_start:request_end]
+        slice_complexities = workload_info.compute_complexities[
+            request_start:request_end]
+
+        ubatch_slice = UbatchSlice(
+            request_slice=slice(request_start, request_end),
+            token_slice=slice(token_start, token_end),
+            compute_complexity=float(torch.sum(slice_complexities)),
+            query_lens=slice_query_lens,
+            is_prefill=torch.any(slice_query_lens > 1),
+            max_query_len=int(torch.max(slice_query_lens)))
+        ubatch_slices.append(ubatch_slice)
+
+    return ubatch_slices
+
+
+def _create_balanced_consecutive_ubatch_slices(
+        workload_info: UbatchWorkloadInfo,
+        num_ubatches: int,
+        balance_strategy: str = "compute_complexity") -> list[UbatchSlice]:
+    """
+    Create balanced ubatch slices for mixed workloads, maintaining consecutive indices.
+
+    This uses a dynamic programming approach to find optimal consecutive splits
+    that minimize load imbalance.
+    """
     if balance_strategy == "compute_complexity":
         weights = workload_info.compute_complexities
     else:  # "tokens"
         weights = workload_info.query_lens.float()
 
-    total_weight = torch.sum(weights)
-    target_weight = total_weight / num_ubatches
+    num_requests = len(weights)
 
-    # Simple greedy approach: assign requests to ubatches to minimize imbalance
-    ubatch_assignments = [[] for _ in range(num_ubatches)]
-    ubatch_weights = [0.0 for _ in range(num_ubatches)]
+    # Use dynamic programming to find optimal split points
+    # dp[i][j] = minimum max load when splitting first i requests into j ubatches
+    dp = torch.full((num_requests + 1, num_ubatches + 1), float('inf'))
+    splits = torch.zeros((num_requests + 1, num_ubatches + 1),
+                         dtype=torch.long)
 
-    # Sort requests by weight in descending order for better balancing
-    sorted_indices = torch.argsort(weights, descending=True)
+    # Base case: 0 requests need 0 ubatches
+    dp[0][0] = 0
 
-    for idx in sorted_indices:
-        # Assign to the ubatch with the least current weight
-        min_ubatch = min(range(num_ubatches), key=lambda i: ubatch_weights[i])
-        ubatch_assignments[min_ubatch].append(idx.item())
-        ubatch_weights[min_ubatch] += weights[idx].item()
+    # Calculate prefix sums for efficient range sum queries
+    prefix_sums = torch.cat(
+        [torch.tensor([0.0]),
+         torch.cumsum(weights, dim=0)])
 
-    # Create UbatchSlice objects
+    # Fill DP table
+    for i in range(1, num_requests + 1):
+        for j in range(1, min(i, num_ubatches) + 1):
+            # Try all possible starting points for the j-th ubatch
+            for k in range(j - 1, i):
+                # Load of current ubatch (from request k to request i-1)
+                current_load = prefix_sums[i] - prefix_sums[k]
+                # Maximum load including previous ubatches
+                max_load = max(dp[k][j - 1], current_load)
+
+                if max_load < dp[i][j]:
+                    dp[i][j] = max_load
+                    splits[i][j] = k
+
+    # Reconstruct the split points
+    split_points = []
+    i, j = num_requests, num_ubatches
+    while j > 0:
+        split_point = splits[i][j].item()
+        split_points.append(split_point)
+        i = split_point
+        j -= 1
+
+    split_points.reverse()
+    split_points.append(num_requests)  # Add final boundary
+
+    # Create ubatch slices based on split points
     ubatch_slices = []
-    token_offset = 0
 
-    for ubatch_idx in range(num_ubatches):
-        request_indices = sorted(ubatch_assignments[ubatch_idx])
-        if not request_indices:
-            # Empty ubatch - this can happen with very few requests
-            continue
+    for i in range(num_ubatches):
+        request_start = split_points[i]
+        request_end = split_points[i + 1]
 
-        request_start = min(request_indices)
-        request_end = max(request_indices) + 1
+        if request_start >= request_end:
+            continue  # Skip empty ubatches
 
-        # Calculate token slice
-        ubatch_tokens = int(torch.sum(workload_info.query_lens[request_indices]))
-        token_start = token_offset
-        token_end = token_offset + ubatch_tokens
-        token_offset = token_end
+        # Calculate token boundaries
+        if request_start == 0:
+            token_start = 0
+        else:
+            token_start = int(
+                torch.sum(workload_info.query_lens[:request_start]))
+        token_end = int(torch.sum(workload_info.query_lens[:request_end]))
 
-        # Determine if this ubatch contains prefills
-        ubatch_query_lens = workload_info.query_lens[request_indices]
-        has_prefills = torch.any(ubatch_query_lens > 1)
-        max_query_len = int(torch.max(ubatch_query_lens))
-
-        compute_complexity = float(
-            torch.sum(workload_info.compute_complexities[request_indices])
-        )
+        # Calculate properties for this slice
+        slice_query_lens = workload_info.query_lens[request_start:request_end]
+        slice_complexities = workload_info.compute_complexities[
+            request_start:request_end]
 
         ubatch_slice = UbatchSlice(
             request_slice=slice(request_start, request_end),
             token_slice=slice(token_start, token_end),
-            compute_complexity=compute_complexity,
-            query_lens=ubatch_query_lens,
-            is_prefill=has_prefills,
-            max_query_len=max_query_len,
-        )
+            compute_complexity=float(torch.sum(slice_complexities)),
+            query_lens=slice_query_lens,
+            is_prefill=torch.any(slice_query_lens > 1),
+            max_query_len=int(torch.max(slice_query_lens)))
         ubatch_slices.append(ubatch_slice)
 
     return ubatch_slices
