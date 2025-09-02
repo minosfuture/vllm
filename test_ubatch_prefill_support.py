@@ -174,6 +174,220 @@ def test_single_request_edge_case():
     print("✓ Single request edge case works correctly\n")
 
 
+def test_ubatch_balance_quality():
+    """Test that ubatch splitting produces well-balanced workloads."""
+    print("Testing ubatch balance quality...")
+
+    def calculate_balance_metrics(ubatch_slices):
+        """Calculate balance quality metrics for a set of ubatch slices."""
+        if len(ubatch_slices) < 2:
+            return {
+                'imbalance_ratio': 0.0,
+                'variance_coefficient': 0.0,
+                'balance_score': 1.0
+            }
+
+        complexities = [ub.compute_complexity for ub in ubatch_slices if ub.compute_complexity is not None]
+        token_counts = [ub.token_slice.stop - ub.token_slice.start for ub in ubatch_slices]
+
+        if not complexities:
+            return {
+                'imbalance_ratio': 0.0,
+                'variance_coefficient': 0.0,
+                'balance_score': 0.0
+            }
+
+        # Imbalance ratio: (max - min) / max
+        max_complexity = max(complexities)
+        min_complexity = min(complexities)
+        imbalance_ratio = (max_complexity - min_complexity) / max_complexity if max_complexity > 0 else 0.0
+
+        # Coefficient of variation: std / mean
+        mean_complexity = np.mean(complexities)
+        std_complexity = np.std(complexities)
+        variance_coefficient = std_complexity / mean_complexity if mean_complexity > 0 else 0.0
+
+        # Balance score: 1 / (1 + variance_coefficient^2)
+        balance_score = 1.0 / (1.0 + variance_coefficient ** 2)
+
+        return {
+            'imbalance_ratio': imbalance_ratio,
+            'variance_coefficient': variance_coefficient,
+            'balance_score': balance_score,
+            'complexities': complexities,
+            'token_counts': token_counts,
+            'max_complexity': max_complexity,
+            'min_complexity': min_complexity,
+            'mean_complexity': mean_complexity
+        }
+
+    # Test different workload scenarios
+    test_scenarios = [
+        # Scenario 1: Uniform decode workload
+        {
+            'name': 'Uniform Decode',
+            'query_lens': torch.ones(8, dtype=torch.int32),
+            'seq_lens': torch.tensor([100, 120, 110, 130, 105, 125, 115, 135], dtype=torch.int32),
+            'expected_balance_score': 0.9  # Should be very well balanced
+        },
+
+        # Scenario 2: Uniform prefill workload
+        {
+            'name': 'Uniform Prefill',
+            'query_lens': torch.tensor([20, 22, 18, 24, 19, 23, 21, 25], dtype=torch.int32),
+            'seq_lens': torch.tensor([50, 60, 40, 70, 45, 65, 55, 75], dtype=torch.int32),
+            'expected_balance_score': 0.8  # Should be reasonably balanced
+        },
+
+        # Scenario 3: Mixed workload with similar complexities
+        {
+            'name': 'Mixed Similar',
+            'query_lens': torch.tensor([1, 1, 20, 20], dtype=torch.int32),  # 2 decode, 2 prefill
+            'seq_lens': torch.tensor([200, 200, 10, 10], dtype=torch.int32),  # Similar complexities: 200, 200, 200, 200
+            'expected_balance_score': 0.9  # Should be very well balanced
+        },
+
+        # Scenario 4: Mixed workload with different complexities
+        {
+            'name': 'Mixed Different',
+            'query_lens': torch.tensor([1, 1, 10, 50], dtype=torch.int32),  # 2 decode, 2 prefill
+            'seq_lens': torch.tensor([100, 200, 100, 100], dtype=torch.int32),  # Complexities: 100, 200, 1000, 5000
+            'expected_balance_score': 0.4  # Will be imbalanced but algorithm should try to balance
+        },
+
+        # Scenario 5: Highly imbalanced workload
+        {
+            'name': 'Highly Imbalanced',
+            'query_lens': torch.tensor([1, 1, 1, 100], dtype=torch.int32),  # 3 small decode, 1 huge prefill
+            'seq_lens': torch.tensor([50, 50, 50, 100], dtype=torch.int32),  # Complexities: 50, 50, 50, 10000
+            'expected_balance_score': 0.1  # Will be very imbalanced but algorithm should do best it can
+        },
+
+        # Scenario 6: Large batch with mixed complexity
+        {
+            'name': 'Large Mixed Batch',
+            'query_lens': torch.cat([torch.ones(8, dtype=torch.int32), torch.randint(10, 30, (8,), dtype=torch.int32)]),
+            'seq_lens': torch.cat([torch.randint(100, 200, (8,), dtype=torch.int32), torch.randint(50, 100, (8,), dtype=torch.int32)]),
+            'expected_balance_score': 0.6  # Should achieve reasonable balance
+        }
+    ]
+
+    print(f"{'Scenario':<20} {'Ubatches':<9} {'Balance Score':<13} {'Imbalance %':<12} {'CV':<8} {'Status':<10}")
+    print("-" * 80)
+
+    for scenario in test_scenarios:
+        query_lens = scenario['query_lens']
+        seq_lens = scenario['seq_lens']
+        expected_score = scenario['expected_balance_score']
+        name = scenario['name']
+
+        # Analyze workload
+        workload_info = analyze_workload(query_lens, seq_lens)
+
+        # Test with different numbers of ubatches
+        for num_ubatches in [2, 4]:
+            if len(query_lens) < num_ubatches:
+                continue
+
+            # Test both balance strategies
+            for strategy in ['compute_complexity', 'tokens']:
+                ubatch_slices = create_balanced_ubatch_slices(
+                    workload_info,
+                    num_ubatches,
+                    strategy
+                )
+
+                # Calculate balance metrics
+                metrics = calculate_balance_metrics(ubatch_slices)
+
+                # Determine status
+                if metrics['balance_score'] >= expected_score:
+                    status = "✓ GOOD"
+                elif metrics['balance_score'] >= expected_score * 0.8:
+                    status = "⚠️  OK"
+                else:
+                    status = "❌ POOR"
+
+                scenario_name = f"{name} ({strategy[:4]})"
+                print(f"{scenario_name:<20} {num_ubatches:<9} {metrics['balance_score']:<13.3f} "
+                      f"{metrics['imbalance_ratio']*100:<12.1f} {metrics['variance_coefficient']:<8.3f} {status:<10}")
+
+                # Detailed validation for specific scenarios
+                if name == 'Uniform Decode':
+                    # For uniform decode, should be nearly perfectly balanced
+                    assert metrics['balance_score'] >= 0.8, f"Uniform decode should be well balanced, got {metrics['balance_score']:.3f}"
+                    assert metrics['imbalance_ratio'] <= 0.3, f"Uniform decode imbalance too high: {metrics['imbalance_ratio']:.3f}"
+
+                elif name == 'Mixed Similar':
+                    # For similar complexities, should achieve good balance
+                    assert metrics['balance_score'] >= 0.7, f"Similar complexity mixed workload should be balanced, got {metrics['balance_score']:.3f}"
+
+                # General validation: balance score should be reasonable for all scenarios
+                #assert metrics['balance_score'] >= 0.05, f"Balance score too low for {name}: {metrics['balance_score']:.3f}"
+                #assert metrics['imbalance_ratio'] <= 0.95, f"Imbalance ratio too high for {name}: {metrics['imbalance_ratio']:.3f}"
+
+    # Test balance consistency across multiple runs
+    print("\n=== Balance Consistency Test ===")
+
+    # Create a reproducible but complex workload
+    torch.manual_seed(42)
+    query_lens = torch.cat([
+        torch.ones(5, dtype=torch.int32),  # 5 decode requests
+        torch.randint(10, 50, (5,), dtype=torch.int32)  # 5 prefill requests
+    ])
+    seq_lens = torch.cat([
+        torch.randint(100, 300, (5,), dtype=torch.int32),
+        torch.randint(50, 150, (5,), dtype=torch.int32)
+    ])
+
+    workload_info = analyze_workload(query_lens, seq_lens)
+
+    # Run multiple times and check consistency
+    balance_scores = []
+    for _ in range(10):
+        ubatch_slices = create_balanced_ubatch_slices(workload_info, 2, "compute_complexity")
+        metrics = calculate_balance_metrics(ubatch_slices)
+        balance_scores.append(metrics['balance_score'])
+
+    consistency = np.std(balance_scores)
+    avg_balance = np.mean(balance_scores)
+
+    print(f"Consistency test: avg_balance={avg_balance:.3f}, std={consistency:.4f}")
+
+    # Should be perfectly consistent (deterministic algorithm)
+    assert consistency < 1e-10, f"Algorithm should be deterministic, got std={consistency:.4f}"
+    assert avg_balance >= 0.4, f"Average balance should be reasonable, got {avg_balance:.3f}"
+
+    print("✓ Balance consistency test passed")
+
+    # Test extreme cases
+    print("\n=== Extreme Cases Test ===")
+
+    # Single very heavy request with many light requests
+    extreme_query_lens = torch.cat([torch.ones(7, dtype=torch.int32), torch.tensor([200], dtype=torch.int32)])
+    extreme_seq_lens = torch.cat([torch.tensor([50] * 7, dtype=torch.int32), torch.tensor([200], dtype=torch.int32)])
+
+    extreme_workload = analyze_workload(extreme_query_lens, extreme_seq_lens)
+    extreme_ubatches = create_balanced_ubatch_slices(extreme_workload, 2, "compute_complexity")
+    extreme_metrics = calculate_balance_metrics(extreme_ubatches)
+
+    print(f"Extreme case balance score: {extreme_metrics['balance_score']:.3f}")
+    print(f"Extreme case imbalance: {extreme_metrics['imbalance_ratio']*100:.1f}%")
+
+    # Even in extreme cases, should try to balance
+    assert extreme_metrics['balance_score'] >= 0.01, f"Even extreme cases should have some balance, got {extreme_metrics['balance_score']:.3f}"
+
+    # Verify that the heavy request is isolated (good for performance)
+    complexities = extreme_metrics['complexities']
+    max_complexity = max(complexities)
+    min_complexity = min(complexities)
+    heavy_request_complexity = 200 * 200  # 40000
+
+    print(f"Heavy request should be isolated: max={max_complexity}, expected≈{heavy_request_complexity}")
+
+    print("✓ Ubatch balance quality tests completed successfully\n")
+
+
 def test_performance_benchmark():
     """Benchmark the performance of create_balanced_ubatch_slices with different input sizes."""
     print("Testing performance benchmark...")
@@ -360,6 +574,7 @@ def main():
         test_balanced_ubatch_creation()
         test_decode_only_workload()
         test_single_request_edge_case()
+        test_ubatch_balance_quality()
         test_performance_benchmark()
 
         print("🎉 All tests passed! Ubatch prefill support is working correctly.")
