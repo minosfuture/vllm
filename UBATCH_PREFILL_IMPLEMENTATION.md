@@ -10,7 +10,7 @@ This implementation extends vLLM's ubatch (micro-batching) system to support pre
 - **Location**: `/vllm/v1/attention/backends/utils.py`
 - **Changes**: Extended `UbatchSlice` with prefill-specific metadata:
   - `compute_complexity`: Estimated compute workload for load balancing
-  - `query_lens`: Query lengths for each request in the ubatch  
+  - `query_lens`: Query lengths for each request in the ubatch
   - `is_prefill`: Boolean flag indicating prefill operations
   - `max_query_len`: Maximum query length in the ubatch
   - `request_indices`/`token_indices`: Support for non-consecutive indices (future extension)
@@ -18,7 +18,7 @@ This implementation extends vLLM's ubatch (micro-batching) system to support pre
 ### 2. Workload Analysis System
 - **Function**: `analyze_workload()`
 - **Purpose**: Analyzes batch characteristics to determine optimal splitting strategy
-- **Metrics**: 
+- **Metrics**:
   - Decode vs prefill request counts
   - Token distribution
   - Compute complexity estimation using O(query_len × seq_len) model
@@ -35,7 +35,7 @@ This implementation extends vLLM's ubatch (micro-batching) system to support pre
 ### 4. Performance Optimization
 - **Location**: `/vllm/v1/attention/backends/utils_optimized.py`
 - **Algorithm**: Fast O(n log n) greedy splitting for large batches (≥64 requests)
-- **Benefits**: 
+- **Benefits**:
   - 2.79x geometric mean speedup
   - Up to 338x improvement for small mixed workloads
   - Maintains 99.3% balance quality preservation
@@ -79,8 +79,8 @@ workload_info = analyze_workload(query_lens, seq_lens)
 
 # Create balanced ubatches (automatically selects optimal algorithm)
 ubatch_slices = create_balanced_ubatch_slices(
-    workload_info, 
-    num_ubatches=2, 
+    workload_info,
+    num_ubatches=2,
     balance_strategy="compute_complexity"
 )
 ```

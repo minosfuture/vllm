@@ -820,21 +820,21 @@ def create_balanced_ubatch_slices(
 ) -> list[UbatchSlice]:
     """
     Create balanced ubatch slices based on workload characteristics.
-    
+
     This function supports arbitrary number of ubatches and maintains consecutive
     slices required by the existing UbatchSlice infrastructure. For large batches,
     it uses optimized algorithms to avoid performance bottlenecks.
-    
+
     Args:
         workload_info: Analysis of the current workload
         num_ubatches: Number of micro-batches to create
         balance_strategy: Strategy for balancing ("compute_complexity" or "tokens")
-        
+
     Returns:
         List of UbatchSlice objects for balanced micro-batches
     """
     num_requests = workload_info.total_requests
-    
+
     # Use fast algorithm for large batches to avoid O(n^2) complexity
     if num_requests >= 64:  # Threshold for switching to fast algorithm
         try:
@@ -842,19 +842,19 @@ def create_balanced_ubatch_slices(
             return create_fast_balanced_ubatch_slices(workload_info, num_ubatches, balance_strategy)
         except ImportError:
             pass  # Fall back to original algorithm
-    
+
     if num_requests < num_ubatches:
         # If we have fewer requests than ubatches, create one ubatch per request
         return _create_single_request_ubatches(workload_info)
-    
+
     # Check if this is a mixed workload that needs intelligent splitting
-    has_mixed_workload = (workload_info.prefill_requests > 0 and 
+    has_mixed_workload = (workload_info.prefill_requests > 0 and
                          workload_info.decode_requests > 0)
-    
+
     if not has_mixed_workload:
         # For uniform workloads (all decode or all prefill), use simple consecutive splitting
         return _create_simple_consecutive_ubatch_slices(workload_info, num_ubatches)
-    
+
     # For mixed workloads, use balanced splitting
     return _create_balanced_consecutive_ubatch_slices(workload_info, num_ubatches, balance_strategy)
 
