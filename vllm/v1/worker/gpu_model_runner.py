@@ -957,7 +957,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                         ubatch_slices, common_attn_metadata)
                     for ubid, common_attn_metadata in enumerate(
                             common_attn_metadata_list):
-                        assert common_attn_metadata.max_query_len == 1
+                        logger.debug(f"ubid: {ubid}, common_attn_metadata: {common_attn_metadata}")
                         attn_metadata_i = (attn_group.get_metadata_builder(ubatch_id=ubid).build(
                                 common_prefix_len=common_prefix_len,
                                 common_attn_metadata=common_attn_metadata))
