@@ -189,7 +189,7 @@ def split_attn_metadata(
             # For prefill ubatches, ensure we have the correct max_query_len
             result.max_query_len = ubatch_slice.max_query_len
 
-        results.append()
+        results.append(result)
     return results
 
 
@@ -822,7 +822,7 @@ def analyze_workload(
 def create_balanced_ubatch_slices(
     workload_info: UbatchWorkloadInfo,
     num_ubatches: int = 2,
-    balance_strategy: str = "compute_complexity"
+    balance_strategy: str = "compute_complexity",
 ) -> list[UbatchSlice]:
     """
     Create balanced ubatch slices based on workload characteristics.
@@ -841,21 +841,23 @@ def create_balanced_ubatch_slices(
     """
     num_requests = workload_info.total_requests
 
-
     if num_requests < num_ubatches:
         # If we have fewer requests than ubatches, create one ubatch per request
         return _create_single_request_ubatches(workload_info)
 
     # Check if this is a mixed workload that needs intelligent splitting
-    has_mixed_workload = (workload_info.prefill_requests > 0 and
-                         workload_info.decode_requests > 0)
+    has_mixed_workload = (
+        workload_info.prefill_requests > 0 and workload_info.decode_requests > 0
+    )
 
     if not has_mixed_workload:
         # For uniform workloads (all decode or all prefill), use simple consecutive splitting
         return _create_simple_consecutive_ubatch_slices(workload_info, num_ubatches)
 
     # For mixed workloads, use balanced splitting
-    return _create_balanced_consecutive_ubatch_slices(workload_info, num_ubatches, balance_strategy)
+    return _create_balanced_consecutive_ubatch_slices(
+        workload_info, num_ubatches, balance_strategy
+    )
 
 
 def _create_single_request_ubatches(
@@ -924,13 +926,13 @@ def _create_simple_consecutive_ubatch_slices(
 def _create_balanced_consecutive_ubatch_slices(
     workload_info: UbatchWorkloadInfo,
     num_ubatches: int,
-    balance_strategy: str = "compute_complexity"
+    balance_strategy: str = "compute_complexity",
 ) -> list[UbatchSlice]:
     """
-    Fast ubatch splitting for large batches using greedy heuristics instead of DP.
+    Create balanced ubatch slices with consecutive request indices using dynamic programming.
 
-    This version uses O(n log n) complexity instead of O(n^2 * k) and maintains
-    consecutive memory layout where possible.
+    This ensures that each ubatch contains consecutive request indices (e.g., 1,2,3 not 1,2,4)
+    while attempting to balance the load across ubatches based on the selected strategy.
     """
     num_requests = workload_info.total_requests
 
@@ -942,80 +944,60 @@ def _create_balanced_consecutive_ubatch_slices(
     if num_requests <= 32:
         return _create_simple_consecutive_ubatch_slices(workload_info, num_ubatches)
 
-    # For large batches, use fast greedy splitting
     # Choose weights based on strategy
     if balance_strategy == "compute_complexity":
         weights = workload_info.compute_complexities
     else:  # "tokens"
         weights = workload_info.query_lens.float()
 
-    # Sort requests by weight (heaviest first)
-    sorted_indices = torch.argsort(weights, descending=True)
+    # Use a greedy approach to find balanced consecutive splits
+    # Calculate prefix sums for efficient range sum queries
+    prefix_weights = torch.cumsum(weights, dim=0)
+    total_weight = float(prefix_weights[-1])
+    target_weight_per_ubatch = total_weight / num_ubatches
 
-    # Distribute requests in round-robin to achieve balance
-    ubatch_request_lists = [[] for _ in range(num_ubatches)]
+    # Find split points that create roughly balanced consecutive segments
+    split_points = [0]  # Start with first request
+    current_target = target_weight_per_ubatch
 
-    for i, idx in enumerate(sorted_indices):
-        ubatch_idx = i % num_ubatches
-        ubatch_request_lists[ubatch_idx].append(int(idx))
+    for i in range(1, num_requests):
+        current_weight = float(prefix_weights[i - 1])  # Weight up to current position
 
-    # Sort each ubatch's requests to maintain consecutive memory access
-    for req_list in ubatch_request_lists:
-        req_list.sort()
+        # If we've reached our target weight and we're not at the last ubatch
+        if current_weight >= current_target and len(split_points) < num_ubatches:
+            split_points.append(i)
+            current_target += target_weight_per_ubatch
 
-    # Create ubatch slices
+    # Ensure we end at the last request
+    if split_points[-1] != num_requests:
+        split_points.append(num_requests)
+
+    # Create ubatch slices from consecutive segments
     ubatch_slices = []
 
-    for req_indices in ubatch_request_lists:
-        if not req_indices:
-            continue
+    for i in range(len(split_points) - 1):
+        start_idx = split_points[i]
+        end_idx = split_points[i + 1]
 
-        # Convert to consecutive ranges where possible for efficiency
-        ranges = _consolidate_to_ranges(req_indices)
-
-        if len(ranges) == 1:
-            # Single consecutive range - use slice
-            start, end = ranges[0]
-
-            token_start = int(torch.sum(workload_info.query_lens[:start])) if start > 0 else 0
-            token_end = int(torch.sum(workload_info.query_lens[:end]))
-
-            slice_query_lens = workload_info.query_lens[start:end]
-            slice_complexities = workload_info.compute_complexities[start:end]
-
-            ubatch_slice = UbatchSlice(
-                request_slice=slice(start, end),
-                token_slice=slice(token_start, token_end),
-                compute_complexity=float(torch.sum(slice_complexities)),
-                query_lens=slice_query_lens,
-                has_prefill=bool(torch.any(slice_query_lens > 1)),
-                max_query_len=int(torch.max(slice_query_lens))
-            )
+        # Calculate token boundaries
+        if start_idx == 0:
+            token_start = 0
         else:
-            # Multiple ranges - use indices (future extension)
-            # For now, create a slice covering the full range and mark non-consecutive
-            start, end = min(req_indices), max(req_indices) + 1
+            token_start = int(torch.sum(workload_info.query_lens[:start_idx]))
+        token_end = int(torch.sum(workload_info.query_lens[:end_idx]))
 
-            token_start = int(torch.sum(workload_info.query_lens[:start])) if start > 0 else 0
-            token_end = int(torch.sum(workload_info.query_lens[:end]))
+        # Get slice properties
+        slice_query_lens = workload_info.query_lens[start_idx:end_idx]
+        slice_complexities = workload_info.compute_complexities[start_idx:end_idx]
 
-            # Calculate actual tokens for this ubatch
-            actual_tokens = int(torch.sum(workload_info.query_lens[req_indices]))
-
-            # Use the range slice but note it's not fully consecutive
-            slice_query_lens = workload_info.query_lens[req_indices]
-            slice_complexities = workload_info.compute_complexities[req_indices]
-
-            ubatch_slice = UbatchSlice(
-                request_slice=slice(start, end),  # Conservative range
-                token_slice=slice(token_start, token_start + actual_tokens),
-                compute_complexity=float(torch.sum(slice_complexities)),
-                query_lens=slice_query_lens,
-                has_prefill=bool(torch.any(slice_query_lens > 1)),
-                max_query_len=int(torch.max(slice_query_lens)),
-                request_indices=torch.tensor(req_indices, dtype=torch.long)
-            )
-
+        ubatch_slice = UbatchSlice(
+            request_slice=slice(start_idx, end_idx),
+            token_slice=slice(token_start, token_end),
+            compute_complexity=float(torch.sum(slice_complexities)),
+            query_lens=slice_query_lens,
+            has_prefill=bool(torch.any(slice_query_lens > 1)),
+            max_query_len=int(torch.max(slice_query_lens)),
+        )
         ubatch_slices.append(ubatch_slice)
 
     return ubatch_slices
