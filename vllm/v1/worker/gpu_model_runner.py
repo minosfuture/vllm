@@ -1564,6 +1564,16 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             assert num_tokens_across_dp is None
             return should_ubatch, 0, num_tokens_across_dp
 
+        # If there's only one ubatch slice, we cannot do ubatching
+        if len(ubatch_slices) < 2:
+            (should_ubatch, num_tokens_across_dp) = self.should_ubatch_with_num_tokens(
+                False, 0
+            )
+            assert should_ubatch is False
+            assert num_tokens_across_dp is None
+            return should_ubatch, 0, num_tokens_across_dp
+
+        # TODO(ming): generalize this to more than two batches?)
         first_ubatch_slice = ubatch_slices[0]
         second_ubatch_slice = ubatch_slices[1]
 
@@ -1823,7 +1833,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 for i, ubatch_slice in enumerate(ubatch_slices):
                     if hasattr(ubatch_slice, 'compute_complexity') and ubatch_slice.compute_complexity:
                         logger.debug(f"Ubatch {i} complexity: {ubatch_slice.compute_complexity:.2f}, "
-                                   f"is_prefill: {ubatch_slice.is_prefill}")
+                                   f"has_prefill: {ubatch_slice.has_prefill}")
 
             model_output = self.model(
                 input_ids=input_ids,

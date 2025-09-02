@@ -1065,7 +1065,7 @@ def split_attn_metadata_with_prefill_support(
         result = _make_metadata_with_slice(ubatch_slice, common_attn_metadata)
 
         # Update the metadata with prefill-aware information
-        if ubatch_slice.is_prefill:
+        if ubatch_slice.has_prefill:
             # For prefill ubatches, ensure we have the correct max_query_len
             result.max_query_len = ubatch_slice.max_query_len
 

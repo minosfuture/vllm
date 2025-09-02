@@ -25,6 +25,7 @@ from vllm.v1.kv_cache_interface import (FullAttentionSpec, KVCacheConfig,
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.worker.gpu_input_batch import InputBatch
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
+from vllm.v1.attention.backends.utils import UbatchSlice
 
 BLOCK_SIZE = 16
 NUM_BLOCKS = 10
@@ -694,6 +695,50 @@ def test_init_kv_cache_with_kv_sharing_valid():
         0] == layer_0
     assert kv_cache_config_after_init.kv_cache_groups[0].layer_names[
         1] == layer_1
+
+
+def test_get_dp_padding_ubatch_single_slice(model_runner, dist_init):
+    """Test get_dp_padding_ubatch with single ubatch slice (edge case)"""
+    # Create a single ubatch slice - this was causing IndexError before the fix
+    single_ubatch_slice = [UbatchSlice(slice(0, 1), slice(0, 1))]
+
+    # This should not raise an IndexError and should return should_ubatch=False
+    should_ubatch, num_pad_tokens, num_tokens_after_padding = (
+        model_runner.get_dp_padding_ubatch(single_ubatch_slice))
+
+    # With a single ubatch slice, ubatching should be disabled
+    assert should_ubatch is False
+    assert num_pad_tokens == 0
+    assert num_tokens_after_padding is None
+
+
+def test_get_dp_padding_ubatch_two_slices(model_runner, dist_init):
+    """Test get_dp_padding_ubatch with two ubatch slices (normal case)"""
+    # Create two ubatch slices - normal case
+    two_ubatch_slices = [
+        UbatchSlice(slice(0, 1), slice(0, 1)),
+        UbatchSlice(slice(1, 2), slice(1, 2))
+    ]
+
+    # This should work as expected with two slices
+    should_ubatch, num_pad_tokens, num_tokens_after_padding = (
+        model_runner.get_dp_padding_ubatch(two_ubatch_slices))
+
+    # The result depends on DP configuration, but it should not crash
+    assert isinstance(should_ubatch, bool)
+    assert isinstance(num_pad_tokens, int)
+    # num_tokens_after_padding can be None or torch.Tensor depending on DP setup
+
+
+def test_get_dp_padding_ubatch_none_slices(model_runner, dist_init):
+    """Test get_dp_padding_ubatch with None ubatch slices"""
+    # Test with None - this should work fine
+    should_ubatch, num_pad_tokens, num_tokens_after_padding = (
+        model_runner.get_dp_padding_ubatch(None))
+
+    assert should_ubatch is False
+    assert num_pad_tokens == 0
+    assert num_tokens_after_padding is None
 
 
 def test_hybrid_attention_mamba_tensor_shapes(monkeypatch):
