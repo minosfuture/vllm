@@ -621,45 +621,18 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 for i in range(num_reqs)
             ], dtype=torch.int32)
 
-            # Import the enhanced ubatch utilities
-            try:
-                from vllm.v1.attention.backends.utils import (
-                    analyze_workload, create_balanced_ubatch_slices
-                )
-            except ImportError:
-                # Fallback to simple splitting if enhanced utilities are not available
-                ubatch_slices = [
-                    UbatchSlice(slice(0, b0_reqs_end), slice(0, b0_tokens_end)),
-                    UbatchSlice(slice(b0_reqs_end, num_reqs),
-                                slice(b0_tokens_end, total_num_scheduled_tokens)),
-                ]
-                should_ubatch, num_pad_tokens, num_tokens_after_padding = self.get_dp_padding_ubatch(
-                    ubatch_slices)
-                if not should_ubatch:
-                    return (None, 0, None)
+            # Use enhanced ubatch utilities for intelligent splitting
+            from vllm.v1.attention.backends.utils import (
+                analyze_workload, create_balanced_ubatch_slices
+            )
 
-            # Analyze the workload characteristics
+            # Analyze the workload characteristics and create balanced ubatches
             workload_info = analyze_workload(query_lens, seq_lens)
-
-            # Use intelligent splitting for mixed workloads
-            if workload_info.prefill_requests > 0 or workload_info.decode_requests != workload_info.total_requests:
-                # Mixed workload - use compute complexity balancing
-                ubatch_slices = create_balanced_ubatch_slices(
-                    workload_info,
-                    num_ubatches=2,
-                    balance_strategy="compute_complexity"
-                )
-            else:
-                # Pure decode workload - use simple splitting
-                b0_reqs_end = num_reqs // 2
-                b0_tokens_end = total_num_scheduled_tokens // 2
-                assert b0_reqs_end < num_reqs and \
-                    b0_tokens_end < total_num_scheduled_tokens
-                ubatch_slices = [
-                    UbatchSlice(slice(0, b0_reqs_end), slice(0, b0_tokens_end)),
-                    UbatchSlice(slice(b0_reqs_end, num_reqs),
-                                slice(b0_tokens_end, total_num_scheduled_tokens)),
-                ]
+            ubatch_slices = create_balanced_ubatch_slices(
+                workload_info,
+                num_ubatches=2,
+                balance_strategy="compute_complexity"
+            )
 
         # Don't microbatch unless every other DP worker is also microbatching
         num_pad_tokens = 0
@@ -1850,17 +1823,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
             # Enhanced ubatching execution with prefill support
             if ubatch_slices is not None:
-                from vllm.v1.worker.ubatching import make_ubatch_contexts
-
                 # Set up compute complexity information for adaptive synchronization
                 for i, ubatch_slice in enumerate(ubatch_slices):
-                    estimated_time = None
                     if hasattr(ubatch_slice, 'compute_complexity') and ubatch_slice.compute_complexity:
-                        # Rough estimate: complexity is proportional to execution time
-                        estimated_time = ubatch_slice.compute_complexity / 1000.0  # Scale to seconds
-
-                    # Additional adaptive sync setup can be done here
-                    # For example, setting timeout based on workload characteristics
+                        logger.debug(f"Ubatch {i} complexity: {ubatch_slice.compute_complexity:.2f}, "
+                                   f"is_prefill: {ubatch_slice.is_prefill}")
 
             model_output = self.model(
                 input_ids=input_ids,
