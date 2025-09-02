@@ -835,13 +835,6 @@ def create_balanced_ubatch_slices(
     """
     num_requests = workload_info.total_requests
 
-    # Use fast algorithm for large batches to avoid O(n^2) complexity
-    if num_requests >= 64:  # Threshold for switching to fast algorithm
-        try:
-            from vllm.v1.attention.backends.utils_optimized import create_fast_balanced_ubatch_slices
-            return create_fast_balanced_ubatch_slices(workload_info, num_ubatches, balance_strategy)
-        except ImportError:
-            pass  # Fall back to original algorithm
 
     if num_requests < num_ubatches:
         # If we have fewer requests than ubatches, create one ubatch per request
@@ -888,7 +881,6 @@ def _create_simple_consecutive_ubatch_slices(
 ) -> list[UbatchSlice]:
     """Create consecutive ubatch slices for uniform workloads."""
     num_requests = workload_info.total_requests
-    total_tokens = workload_info.total_tokens
 
     ubatch_slices = []
 
@@ -926,92 +918,134 @@ def _create_simple_consecutive_ubatch_slices(
 def _create_balanced_consecutive_ubatch_slices(
     workload_info: UbatchWorkloadInfo,
     num_ubatches: int,
-    balance_strategy: str = "compute_complexity",
+    balance_strategy: str = "compute_complexity"
 ) -> list[UbatchSlice]:
     """
-    Create balanced ubatch slices for mixed workloads, maintaining consecutive indices.
+    Fast ubatch splitting for large batches using greedy heuristics instead of DP.
 
-    This uses a dynamic programming approach to find optimal consecutive splits
-    that minimize load imbalance.
+    This version uses O(n log n) complexity instead of O(n^2 * k) and maintains
+    consecutive memory layout where possible.
     """
+    num_requests = workload_info.total_requests
+
+    # Handle edge cases
+    if num_requests <= num_ubatches:
+        return _create_single_request_ubatches(workload_info)
+
+    # Use simple approach for small batches
+    if num_requests <= 32:
+        return _create_simple_consecutive_ubatch_slices(workload_info, num_ubatches)
+
+    # For large batches, use fast greedy splitting
+    # Choose weights based on strategy
     if balance_strategy == "compute_complexity":
         weights = workload_info.compute_complexities
     else:  # "tokens"
         weights = workload_info.query_lens.float()
 
-    num_requests = len(weights)
+    # Sort requests by weight (heaviest first)
+    sorted_indices = torch.argsort(weights, descending=True)
 
-    # Use dynamic programming to find optimal split points
-    # dp[i][j] = minimum max load when splitting first i requests into j ubatches
-    dp = torch.full((num_requests + 1, num_ubatches + 1), float("inf"))
-    splits = torch.zeros((num_requests + 1, num_ubatches + 1), dtype=torch.long)
+    # Distribute requests in round-robin to achieve balance
+    ubatch_request_lists = [[] for _ in range(num_ubatches)]
 
-    # Base case: 0 requests need 0 ubatches
-    dp[0][0] = 0
+    for i, idx in enumerate(sorted_indices):
+        ubatch_idx = i % num_ubatches
+        ubatch_request_lists[ubatch_idx].append(int(idx))
 
-    # Calculate prefix sums for efficient range sum queries
-    prefix_sums = torch.cat([torch.tensor([0.0]), torch.cumsum(weights, dim=0)])
+    # Sort each ubatch's requests to maintain consecutive memory access
+    for req_list in ubatch_request_lists:
+        req_list.sort()
 
-    # Fill DP table
-    for i in range(1, num_requests + 1):
-        for j in range(1, min(i, num_ubatches) + 1):
-            # Try all possible starting points for the j-th ubatch
-            for k in range(j - 1, i):
-                # Load of current ubatch (from request k to request i-1)
-                current_load = prefix_sums[i] - prefix_sums[k]
-                # Maximum load including previous ubatches
-                max_load = max(dp[k][j - 1], current_load)
-
-                if max_load < dp[i][j]:
-                    dp[i][j] = max_load
-                    splits[i][j] = k
-
-    # Reconstruct the split points
-    split_points = []
-    i, j = num_requests, num_ubatches
-    while j > 0:
-        split_point = splits[i][j].item()
-        split_points.append(split_point)
-        i = split_point
-        j -= 1
-
-    split_points.reverse()
-    split_points.append(num_requests)  # Add final boundary
-
-    # Create ubatch slices based on split points
+    # Create ubatch slices
     ubatch_slices = []
 
-    for i in range(num_ubatches):
-        request_start = split_points[i]
-        request_end = split_points[i + 1]
+    for req_indices in ubatch_request_lists:
+        if not req_indices:
+            continue
 
-        if request_start >= request_end:
-            continue  # Skip empty ubatches
+        # Convert to consecutive ranges where possible for efficiency
+        ranges = _consolidate_to_ranges(req_indices)
 
-        # Calculate token boundaries
-        if request_start == 0:
-            token_start = 0
+        if len(ranges) == 1:
+            # Single consecutive range - use slice
+            start, end = ranges[0]
+
+            token_start = int(torch.sum(workload_info.query_lens[:start])) if start > 0 else 0
+            token_end = int(torch.sum(workload_info.query_lens[:end]))
+
+            slice_query_lens = workload_info.query_lens[start:end]
+            slice_complexities = workload_info.compute_complexities[start:end]
+
+            ubatch_slice = UbatchSlice(
+                request_slice=slice(start, end),
+                token_slice=slice(token_start, token_end),
+                compute_complexity=float(torch.sum(slice_complexities)),
+                query_lens=slice_query_lens,
+                is_prefill=bool(torch.any(slice_query_lens > 1)),
+                max_query_len=int(torch.max(slice_query_lens))
+            )
         else:
-            token_start = int(torch.sum(workload_info.query_lens[:request_start]))
-        token_end = int(torch.sum(workload_info.query_lens[:request_end]))
+            # Multiple ranges - use indices (future extension)
+            # For now, create a slice covering the full range and mark non-consecutive
+            start, end = min(req_indices), max(req_indices) + 1
 
-        # Calculate properties for this slice
-        slice_query_lens = workload_info.query_lens[request_start:request_end]
-        slice_complexities = workload_info.compute_complexities[
-            request_start:request_end
-        ]
+            token_start = int(torch.sum(workload_info.query_lens[:start])) if start > 0 else 0
+            token_end = int(torch.sum(workload_info.query_lens[:end]))
 
-        ubatch_slice = UbatchSlice(
-            request_slice=slice(request_start, request_end),
-            token_slice=slice(token_start, token_end),
-            compute_complexity=float(torch.sum(slice_complexities)),
-            query_lens=slice_query_lens,
-            is_prefill=bool(torch.any(slice_query_lens > 1)),
-            max_query_len=int(torch.max(slice_query_lens)),
-        )
+            # Calculate actual tokens for this ubatch
+            actual_tokens = int(torch.sum(workload_info.query_lens[req_indices]))
+
+            # Use the range slice but note it's not fully consecutive
+            slice_query_lens = workload_info.query_lens[req_indices]
+            slice_complexities = workload_info.compute_complexities[req_indices]
+
+            ubatch_slice = UbatchSlice(
+                request_slice=slice(start, end),  # Conservative range
+                token_slice=slice(token_start, token_start + actual_tokens),
+                compute_complexity=float(torch.sum(slice_complexities)),
+                query_lens=slice_query_lens,
+                is_prefill=bool(torch.any(slice_query_lens > 1)),
+                max_query_len=int(torch.max(slice_query_lens)),
+                request_indices=torch.tensor(req_indices, dtype=torch.long)
+            )
+
         ubatch_slices.append(ubatch_slice)
 
     return ubatch_slices
+
+
+def _consolidate_to_ranges(indices):
+    """
+    Convert a list of indices to consecutive ranges.
+
+    Args:
+        indices: Sorted list of indices
+
+    Returns:
+        List of (start, end) tuples representing consecutive ranges
+    """
+    if not indices:
+        return []
+
+    ranges = []
+    current_start = indices[0]
+    current_end = indices[0]
+
+    for i in range(1, len(indices)):
+        if indices[i] == current_end + 1:
+            # Consecutive index, extend current range
+            current_end = indices[i]
+        else:
+            # Gap found, close current range and start new one
+            ranges.append((current_start, current_end + 1))
+            current_start = indices[i]
+            current_end = indices[i]
+
+    # Add the final range
+    ranges.append((current_start, current_end + 1))
+
+    return ranges
 
 
 def split_attn_metadata_with_prefill_support(
