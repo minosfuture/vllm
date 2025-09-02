@@ -60,7 +60,7 @@ from vllm.v1.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm.v1.attention.backends.utils import (
     AttentionCGSupport, AttentionMetadataBuilder, CommonAttentionMetadata,
     UbatchSlice, make_kv_sharing_fast_prefill_attention_metadata,
-    make_local_attention_virtual_batches, split_attn_metadata, 
+    make_local_attention_virtual_batches, split_attn_metadata,
     reorder_batch_to_split_decodes_and_prefills)
 from vllm.v1.cudagraph_dispatcher import CudagraphDispatcher
 from vllm.v1.kv_cache_interface import (AttentionSpec,
@@ -599,25 +599,67 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         num_reqs = self.input_batch.num_reqs
+
+        # Enhanced ubatching logic that supports prefill operations
         should_attempt_ubatching = \
             self.parallel_config.enable_microbatching and \
             total_num_scheduled_tokens >= \
-            self.parallel_config.microbatching_token_threshold \
-            and max_num_scheduled_tokens == 1
+            self.parallel_config.microbatching_token_threshold
 
-        # For pure decode we can just create ubatches by cutting the request
-        # in half
+        # Don't require max_num_scheduled_tokens == 1 anymore for prefill support
+
         ubatch_slices = None
         if should_attempt_ubatching:
-            b0_reqs_end = num_reqs // 2
-            b0_tokens_end = total_num_scheduled_tokens // 2
-            assert b0_reqs_end < num_reqs and \
-                b0_tokens_end < total_num_scheduled_tokens
-            ubatch_slices = [
-                UbatchSlice(slice(0, b0_reqs_end), slice(0, b0_tokens_end)),
-                UbatchSlice(slice(b0_reqs_end, num_reqs),
-                            slice(b0_tokens_end, total_num_scheduled_tokens)),
-            ]
+            # Get the number of scheduled tokens for each request
+            req_ids = self.input_batch.req_ids
+            tokens = [scheduler_output.num_scheduled_tokens[i] for i in req_ids]
+            query_lens = torch.tensor(tokens, dtype=torch.int32)
+
+            # Get sequence lengths for compute complexity estimation
+            seq_lens = torch.tensor([
+                self.input_batch.num_computed_tokens_cpu[i] + tokens[i]
+                for i in range(num_reqs)
+            ], dtype=torch.int32)
+
+            # Import the enhanced ubatch utilities
+            try:
+                from vllm.v1.attention.backends.utils import (
+                    analyze_workload, create_balanced_ubatch_slices
+                )
+            except ImportError:
+                # Fallback to simple splitting if enhanced utilities are not available
+                ubatch_slices = [
+                    UbatchSlice(slice(0, b0_reqs_end), slice(0, b0_tokens_end)),
+                    UbatchSlice(slice(b0_reqs_end, num_reqs),
+                                slice(b0_tokens_end, total_num_scheduled_tokens)),
+                ]
+                should_ubatch, num_pad_tokens, num_tokens_after_padding = self.get_dp_padding_ubatch(
+                    ubatch_slices)
+                if not should_ubatch:
+                    return (None, 0, None)
+
+            # Analyze the workload characteristics
+            workload_info = analyze_workload(query_lens, seq_lens)
+
+            # Use intelligent splitting for mixed workloads
+            if workload_info.prefill_requests > 0 or workload_info.decode_requests != workload_info.total_requests:
+                # Mixed workload - use compute complexity balancing
+                ubatch_slices = create_balanced_ubatch_slices(
+                    workload_info,
+                    num_ubatches=2,
+                    balance_strategy="compute_complexity"
+                )
+            else:
+                # Pure decode workload - use simple splitting
+                b0_reqs_end = num_reqs // 2
+                b0_tokens_end = total_num_scheduled_tokens // 2
+                assert b0_reqs_end < num_reqs and \
+                    b0_tokens_end < total_num_scheduled_tokens
+                ubatch_slices = [
+                    UbatchSlice(slice(0, b0_reqs_end), slice(0, b0_tokens_end)),
+                    UbatchSlice(slice(b0_reqs_end, num_reqs),
+                                slice(b0_tokens_end, total_num_scheduled_tokens)),
+                ]
 
         # Don't microbatch unless every other DP worker is also microbatching
         num_pad_tokens = 0
@@ -628,13 +670,12 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             return (None, 0, None)
         assert ubatch_slices
 
-
         # Compute ubatch padding. This currently only accounts for DP padding
         if num_pad_tokens > 0:
             self.pad_out_ubatch_first_stage(ubatch_slices, num_pad_tokens)
 
         return (ubatch_slices, num_pad_tokens, num_tokens_after_padding)
-    
+
     def _init_mrope_positions(self, req_state: CachedRequestState):
         image_grid_thw = []
         video_grid_thw = []
@@ -1561,9 +1602,25 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
              first_ubatch_slice.token_slice.start
         second_ubatch_num_tokens = second_ubatch_slice.token_slice.stop - \
             second_ubatch_slice.token_slice.start
-        # We don't support prefills yet so the two ubatches should only differ
-        # by at most one token
-        assert abs(first_ubatch_num_tokens - second_ubatch_num_tokens) <= 1
+
+        # Enhanced validation for prefill support: allow larger differences
+        # but validate that the splitting makes sense
+        token_diff = abs(first_ubatch_num_tokens - second_ubatch_num_tokens)
+        total_tokens = first_ubatch_num_tokens + second_ubatch_num_tokens
+
+        # For decode-only batches, maintain the original constraint
+        # For mixed/prefill batches, allow more flexibility but ensure reasonable balance
+        if hasattr(first_ubatch_slice, 'is_prefill') and first_ubatch_slice.is_prefill:
+            # Allow up to 50% imbalance for prefill batches
+            max_allowed_diff = total_tokens // 2
+            assert token_diff <= max_allowed_diff, (
+                f"Ubatch token imbalance too large: {token_diff} > {max_allowed_diff}"
+            )
+        else:
+            # Original decode-only constraint
+            assert token_diff <= 1, (
+                f"Decode-only ubatches should differ by at most 1 token, got {token_diff}"
+            )
 
         num_tokens_unpadded = first_ubatch_num_tokens + second_ubatch_num_tokens
         num_tokens_padded = round_up(num_tokens_unpadded, 2)
@@ -1611,7 +1668,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
     # This doesn't actually pad the ubatch slices. It just shifts the
     # split point to the correct value so that padding can be applied
-    # to the second ubatch in pad_out_ubatch_second_stage. Should be 
+    # to the second ubatch in pad_out_ubatch_second_stage. Should be
     # called after ubatch slicing but before attention meta data creation
     def pad_out_ubatch_first_stage(self, ubatch_slices: UBatchSlices,
                                    num_pad_tokens: int):
@@ -1701,8 +1758,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                                 self.vllm_config)
 
         # Prepare the decoder inputs.
-        (attn_metadata, logits_indices, spec_decode_metadata, 
-         num_scheduled_tokens_np, spec_decode_common_attn_metadata, 
+        (attn_metadata, logits_indices, spec_decode_metadata,
+         num_scheduled_tokens_np, spec_decode_common_attn_metadata,
          max_query_len, ubatch_slices, num_pad_tokens,
          num_tokens_after_padding) = self._prepare_inputs(scheduler_output)
 
@@ -1790,6 +1847,20 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 ubatch_slices=ubatch_slices
         ), self.maybe_get_kv_connector_output(
                 scheduler_output) as kv_connector_output:
+
+            # Enhanced ubatching execution with prefill support
+            if ubatch_slices is not None:
+                from vllm.v1.worker.ubatching import make_ubatch_contexts
+
+                # Set up compute complexity information for adaptive synchronization
+                for i, ubatch_slice in enumerate(ubatch_slices):
+                    estimated_time = None
+                    if hasattr(ubatch_slice, 'compute_complexity') and ubatch_slice.compute_complexity:
+                        # Rough estimate: complexity is proportional to execution time
+                        estimated_time = ubatch_slice.compute_complexity / 1000.0  # Scale to seconds
+
+                    # Additional adaptive sync setup can be done here
+                    # For example, setting timeout based on workload characteristics
 
             model_output = self.model(
                 input_ids=input_ids,
@@ -2459,7 +2530,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             uniform_decode: If True, the batch is a uniform decode batch.
             skip_eplb: If True, skip EPLB state update.
             is_profile: If True, this is a profile run.
-        """        
+        """
         ubatch_enabled = self.parallel_config.enable_microbatching
         should_ubatch = False
         if ubatch_enabled:

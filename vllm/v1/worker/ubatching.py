@@ -15,6 +15,7 @@ _CURRENT_CONTEXTS: list[Optional['UBatchContext']] = [None, None]
 class UBatchContext:
     """
     Context manager for micro-batching synchronization using threading events.
+    Enhanced to support variable execution times for prefill operations.
     """
 
     def __init__(self,
@@ -28,7 +29,9 @@ class UBatchContext:
                  gpu_comm_done_event: torch.cuda.Event,
                  gpu_compute_done_event: torch.cuda.Event,
                  enable_async_comms: bool,
-                 schedule: str = "default"):
+                 schedule: str = "default",
+                 adaptive_sync: bool = True,
+                 max_wait_time: float = 1.0):
         self.id = id
         self.comm_stream = comm_stream
         self.compute_stream = compute_stream
@@ -42,6 +45,13 @@ class UBatchContext:
         self.enable_async_comms = enable_async_comms
         self.schedule = schedule
         self.recv_hook = None
+
+        # Enhanced attributes for prefill support
+        self.adaptive_sync = adaptive_sync
+        self.max_wait_time = max_wait_time
+        self.is_prefill_batch = False
+        self.estimated_compute_time = None
+        self.actual_start_time = None
 
     def __enter__(self):
         global _CURRENT_CONTEXTS, _THREAD_ID_TO_CONTEXT
@@ -111,7 +121,7 @@ class UBatchContext:
         self._signal_compute_done()
         self.update_stream(self.comm_stream)
         self._wait_comm_done()
-    
+
     def maybe_run_recv_hook(self):
         if self.recv_hook is not None:
             self.recv_hook()
@@ -122,7 +132,7 @@ class UBatchContext:
         self._cpu_yield()
         if self.current_stream == current_stream():
             self.update_stream(self.current_stream)
-    
+
     def yield_and_switch_from_compute_to_comm(self):
         assert current_stream() == self.compute_stream
         self._signal_compute_done()
@@ -138,6 +148,52 @@ class UBatchContext:
         assert self.current_stream == self.comm_stream
         self.update_stream(self.compute_stream)
         self._wait_comm_done()
+
+    def set_prefill_info(self, is_prefill: bool, estimated_compute_time: Optional[float] = None):
+        """
+        Set information about whether this batch contains prefill operations.
+
+        Args:
+            is_prefill: Whether this ubatch contains prefill operations
+            estimated_compute_time: Estimated compute time in seconds (optional)
+        """
+        self.is_prefill_batch = is_prefill
+        self.estimated_compute_time = estimated_compute_time
+
+    def adaptive_wait_for_peer(self, timeout_factor: float = 2.0):
+        """
+        Adaptive synchronization that waits for peer ubatch with timeout based on workload.
+
+        Args:
+            timeout_factor: Multiplier for estimated compute time to set timeout
+        """
+        import time
+
+        if not self.adaptive_sync:
+            # Fallback to standard synchronization
+            self._cpu_yield()
+            return
+
+        # Calculate timeout based on workload
+        if self.estimated_compute_time is not None:
+            timeout = min(self.estimated_compute_time * timeout_factor, self.max_wait_time)
+        else:
+            timeout = self.max_wait_time
+
+        # Record start time
+        start_time = time.time()
+
+        # Try to acquire the event with timeout
+        acquired = self.cpu_wait_event.wait(timeout=timeout)
+
+        if acquired:
+            # Normal synchronization worked
+            self.cpu_wait_event.clear()
+            self._restore_context()
+        else:
+            # Timeout occurred - proceed without waiting
+            # This allows faster ubatches to continue without being blocked
+            pass
 
 
 def dbo_enabled() -> bool:
