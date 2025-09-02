@@ -78,7 +78,7 @@ class UbatchSlice:
     query_lens: Optional[torch.Tensor] = (
         None  # Query lengths for each request in this ubatch
     )
-    is_prefill: bool = False  # Whether this ubatch contains prefill operations
+    has_prefill: bool = False  # Whether this ubatch contains prefill operations
     max_query_len: int = 1  # Maximum query length in this ubatch
 
     # New fields to support non-consecutive request/token indices
@@ -867,7 +867,7 @@ def _create_single_request_ubatches(
             token_slice=slice(token_offset, token_offset + request_tokens),
             compute_complexity=float(workload_info.compute_complexities[i]),
             query_lens=workload_info.query_lens[i : i + 1],
-            is_prefill=bool(workload_info.query_lens[i] > 1),
+            has_prefill=bool(workload_info.query_lens[i] > 1),
             max_query_len=int(workload_info.query_lens[i]),
         )
         ubatch_slices.append(ubatch_slice)
@@ -907,7 +907,7 @@ def _create_simple_consecutive_ubatch_slices(
             token_slice=slice(token_start, token_end),
             compute_complexity=float(torch.sum(slice_complexities)),
             query_lens=slice_query_lens,
-            is_prefill=bool(torch.any(slice_query_lens > 1)),
+            has_prefill=bool(torch.any(slice_query_lens > 1)),
             max_query_len=int(torch.max(slice_query_lens)),
         )
         ubatch_slices.append(ubatch_slice)
@@ -982,7 +982,7 @@ def _create_balanced_consecutive_ubatch_slices(
                 token_slice=slice(token_start, token_end),
                 compute_complexity=float(torch.sum(slice_complexities)),
                 query_lens=slice_query_lens,
-                is_prefill=bool(torch.any(slice_query_lens > 1)),
+                has_prefill=bool(torch.any(slice_query_lens > 1)),
                 max_query_len=int(torch.max(slice_query_lens))
             )
         else:
@@ -1005,7 +1005,7 @@ def _create_balanced_consecutive_ubatch_slices(
                 token_slice=slice(token_start, token_start + actual_tokens),
                 compute_complexity=float(torch.sum(slice_complexities)),
                 query_lens=slice_query_lens,
-                is_prefill=bool(torch.any(slice_query_lens > 1)),
+                has_prefill=bool(torch.any(slice_query_lens > 1)),
                 max_query_len=int(torch.max(slice_query_lens)),
                 request_indices=torch.tensor(req_indices, dtype=torch.long)
             )

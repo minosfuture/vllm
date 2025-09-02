@@ -84,15 +84,15 @@ def test_balanced_ubatch_creation():
         print(f"  Ubatch {i}: requests={ubatch.request_slice}, "
               f"tokens={ubatch.token_slice}, "
               f"complexity={ubatch.compute_complexity:.1f}, "
-              f"is_prefill={ubatch.is_prefill}, "
+              f"has_prefill={ubatch.has_prefill}, "
               f"max_query_len={ubatch.max_query_len}")
 
         # Validate ubatch slice attributes
         assert hasattr(ubatch, 'compute_complexity')
-        assert hasattr(ubatch, 'is_prefill')
+        assert hasattr(ubatch, 'has_prefill')
         assert hasattr(ubatch, 'max_query_len')
         assert ubatch.compute_complexity is not None
-        assert isinstance(ubatch.is_prefill, bool), f"Expected bool, got {type(ubatch.is_prefill)}"
+        assert isinstance(ubatch.has_prefill, bool), f"Expected bool, got {type(ubatch.has_prefill)}"
         assert ubatch.max_query_len >= 1
 
     # Test token balancing with 3 ubatches
@@ -106,7 +106,7 @@ def test_balanced_ubatch_creation():
     for i, ubatch in enumerate(ubatch_slices_tokens):
         print(f"  Ubatch {i}: requests={ubatch.request_slice}, "
               f"tokens={ubatch.token_slice}, "
-              f"is_prefill={ubatch.is_prefill}")
+              f"has_prefill={ubatch.has_prefill}")
 
         # Verify consecutive slices
         assert ubatch.request_slice.start < ubatch.request_slice.stop
@@ -148,9 +148,9 @@ def test_decode_only_workload():
 
     print(f"Decode-only ubatches:")
     for i, ubatch in enumerate(ubatch_slices):
-        print(f"  Ubatch {i}: is_prefill={ubatch.is_prefill}, "
+        print(f"  Ubatch {i}: has_prefill={ubatch.has_prefill}, "
               f"max_query_len={ubatch.max_query_len}")
-        assert not ubatch.is_prefill  # Should be False for decode-only
+        assert not ubatch.has_prefill  # Should be False for decode-only
         assert ubatch.max_query_len == 1  # Should be 1 for decode
 
     print("✓ Decode-only workload handling works correctly\n")
@@ -168,7 +168,7 @@ def test_single_request_edge_case():
 
     # Should create a single ubatch for single request
     assert len(ubatch_slices) == 1
-    assert ubatch_slices[0].is_prefill == True
+    assert ubatch_slices[0].has_prefill == True
     assert ubatch_slices[0].max_query_len == 10
 
     print("✓ Single request edge case works correctly\n")

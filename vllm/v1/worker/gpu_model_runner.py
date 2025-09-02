@@ -61,6 +61,7 @@ from vllm.v1.attention.backends.utils import (
     AttentionCGSupport, AttentionMetadataBuilder, CommonAttentionMetadata,
     UbatchSlice, make_kv_sharing_fast_prefill_attention_metadata,
     make_local_attention_virtual_batches, split_attn_metadata,
+    analyze_workload, create_balanced_ubatch_slices,
     reorder_batch_to_split_decodes_and_prefills)
 from vllm.v1.cudagraph_dispatcher import CudagraphDispatcher
 from vllm.v1.kv_cache_interface import (AttentionSpec,
@@ -620,11 +621,6 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 self.input_batch.num_computed_tokens_cpu[i] + tokens[i]
                 for i in range(num_reqs)
             ], dtype=torch.int32)
-
-            # Use enhanced ubatch utilities for intelligent splitting
-            from vllm.v1.attention.backends.utils import (
-                analyze_workload, create_balanced_ubatch_slices
-            )
 
             # Analyze the workload characteristics and create balanced ubatches
             workload_info = analyze_workload(query_lens, seq_lens)
@@ -1583,7 +1579,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         # For decode-only batches, maintain the original constraint
         # For mixed/prefill batches, allow more flexibility but ensure reasonable balance
-        if hasattr(first_ubatch_slice, 'is_prefill') and first_ubatch_slice.is_prefill:
+        if hasattr(first_ubatch_slice, 'has_prefill') and first_ubatch_slice.has_prefill:
             # Allow up to 50% imbalance for prefill batches
             max_allowed_diff = total_tokens // 2
             assert token_diff <= max_allowed_diff, (

@@ -149,52 +149,6 @@ class UBatchContext:
         self.update_stream(self.compute_stream)
         self._wait_comm_done()
 
-    def set_prefill_info(self, is_prefill: bool, estimated_compute_time: Optional[float] = None):
-        """
-        Set information about whether this batch contains prefill operations.
-
-        Args:
-            is_prefill: Whether this ubatch contains prefill operations
-            estimated_compute_time: Estimated compute time in seconds (optional)
-        """
-        self.is_prefill_batch = is_prefill
-        self.estimated_compute_time = estimated_compute_time
-
-    def adaptive_wait_for_peer(self, timeout_factor: float = 2.0):
-        """
-        Adaptive synchronization that waits for peer ubatch with timeout based on workload.
-
-        Args:
-            timeout_factor: Multiplier for estimated compute time to set timeout
-        """
-        import time
-
-        if not self.adaptive_sync:
-            # Fallback to standard synchronization
-            self._cpu_yield()
-            return
-
-        # Calculate timeout based on workload
-        if self.estimated_compute_time is not None:
-            timeout = min(self.estimated_compute_time * timeout_factor, self.max_wait_time)
-        else:
-            timeout = self.max_wait_time
-
-        # Record start time
-        start_time = time.time()
-
-        # Try to acquire the event with timeout
-        acquired = self.cpu_wait_event.wait(timeout=timeout)
-
-        if acquired:
-            # Normal synchronization worked
-            self.cpu_wait_event.clear()
-            self._restore_context()
-        else:
-            # Timeout occurred - proceed without waiting
-            # This allows faster ubatches to continue without being blocked
-            pass
-
 
 def dbo_enabled() -> bool:
     return len(_THREAD_ID_TO_CONTEXT) > 0
