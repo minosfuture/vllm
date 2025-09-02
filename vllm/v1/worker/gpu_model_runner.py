@@ -951,6 +951,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                         builder,
                     )
 
+                logging.debug(f"ubatch_slices: {ubatch_slices}")
 
                 if ubatch_slices is not None:
                     common_attn_metadata_list = split_attn_metadata(

@@ -183,7 +183,13 @@ def split_attn_metadata(
     """
     results = []
     for ubatch_slice in ubatch_slices:
-        results.append(_make_metadata_with_slice(ubatch_slice, common_attn_metadata))
+        result = _make_metadata_with_slice(ubatch_slice, common_attn_metadata)
+        # Update the metadata with prefill-aware information
+        if ubatch_slice.has_prefill:
+            # For prefill ubatches, ensure we have the correct max_query_len
+            result.max_query_len = ubatch_slice.max_query_len
+
+        results.append()
     return results
 
 
@@ -1046,29 +1052,3 @@ def _consolidate_to_ranges(indices):
     ranges.append((current_start, current_end + 1))
 
     return ranges
-
-
-def split_attn_metadata_with_prefill_support(
-    ubatch_slices: list[UbatchSlice],
-    common_attn_metadata: CommonAttentionMetadata,
-) -> list[CommonAttentionMetadata]:
-    """
-    Enhanced version of split_attn_metadata that handles prefill operations.
-
-    This function creates attention metadata for each ubatch slice, properly
-    handling variable query lengths and mixed prefill/decode workloads.
-    """
-    results = []
-
-    for ubatch_slice in ubatch_slices:
-        # Use the existing implementation but with enhanced ubatch slice info
-        result = _make_metadata_with_slice(ubatch_slice, common_attn_metadata)
-
-        # Update the metadata with prefill-aware information
-        if ubatch_slice.has_prefill:
-            # For prefill ubatches, ensure we have the correct max_query_len
-            result.max_query_len = ubatch_slice.max_query_len
-
-        results.append(result)
-
-    return results
