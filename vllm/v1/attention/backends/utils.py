@@ -885,20 +885,20 @@ def create_balanced_ubatch_slices(
         return _create_single_request_ubatches(workload_info)
 
     # Check if this is a mixed workload that needs intelligent splitting
-        #has_mixed_workload = (
-        #    workload_info.prefill_requests > 0 and workload_info.decode_requests > 0
-        #)
+    uniform_decode = (
+        workload_info.prefill_requests == 0 and workload_info.decode_requests > 0
+    )
 
-        #if not has_mixed_workload:
-        #    logger.debug(
-        #        f"[UBatch Balance] Uniform workload detected, using simple consecutive splitting"
-        #    )
-        #    # For uniform workloads (all decode or all prefill), use simple consecutive splitting
-        #    return _create_simple_consecutive_ubatch_slices(workload_info, num_ubatches)
+    if uniform_decode:
+        logger.debug(
+            f"[UBatch Balance] Uniform workload detected, using simple consecutive splitting"
+        )
+        # For uniform workloads (all decode or all prefill), use simple consecutive splitting
+        return _create_simple_consecutive_ubatch_slices(workload_info, num_ubatches)
 
-        #logger.debug(
-        #    f"[UBatch Balance] Mixed workload detected, using balanced consecutive splitting"
-        #)
+    logger.debug(
+        f"[UBatch Balance] Mixed workload detected, using balanced consecutive splitting"
+    )
     # For mixed workloads, use balanced splitting
     return _create_balanced_consecutive_ubatch_slices(
         workload_info, num_ubatches, balance_strategy
@@ -1008,6 +1008,10 @@ def _create_balanced_consecutive_ubatch_slices(
     prefix_weights = torch.cumsum(weights, dim=0)
     total_weight = float(prefix_weights[-1])
     target_weight_per_ubatch = total_weight / num_ubatches
+    logger.info(f"[UBatch Balance] Target weight per ubatch: "
+                f"{target_weight_per_ubatch}, total weight: {total_weight}, num requests: "
+                f"{num_requests}, num ubatches: {num_ubatches}, weights: {weights}, "
+                f"prefix_weights: {prefix_weights}")
 
     # Find split points that create roughly balanced consecutive segments
     split_points = [0]  # Start with first request
@@ -1016,6 +1020,7 @@ def _create_balanced_consecutive_ubatch_slices(
     for i in range(1, num_requests):
         current_weight = float(prefix_weights[i - 1])  # Weight up to current position
 
+        logger.info(f"[UBatch Balance] Current weight: {current_weight}, current target: {current_target}")
         # If we've reached our target weight and we're not at the last ubatch
         if current_weight >= current_target and len(split_points) < num_ubatches:
             split_points.append(i)

@@ -596,7 +596,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # Don't bother with the should_ubatch handshaking unless microbatching
         # is enabled
         if not self.parallel_config.enable_microbatching:
-            return (None, 0, None)
+            return (None, [], None)
 
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         num_reqs = self.input_batch.num_reqs
