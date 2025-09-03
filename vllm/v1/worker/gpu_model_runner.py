@@ -630,22 +630,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 balance_strategy="compute_complexity"
             )
 
-        # Don't microbatch unless every other DP worker is also microbatching
-        num_pad_tokens = 0
-        num_tokens_after_padding = None
-        should_ubatch, num_pad_tokens, num_tokens_after_padding = self.get_dp_padding_ubatch(
-            ubatch_slices)
-        if not should_ubatch:
-            return (None, 0, None)
-        assert ubatch_slices
+        ubatch_pad_nums, num_tokens_after_padding = self.get_dp_padding_ubatch(ubatch_slices)
 
-        # Compute ubatch padding. This currently only accounts for DP padding
-        if num_pad_tokens > 0:
-            self.pad_out_ubatch_first_stage(ubatch_slices, num_pad_tokens)
-
-        # num_pad_tokens = 0, why?
-        logger.debug(f"ubatch_slices: {ubatch_slices}, num_pad_tokens: {num_pad_tokens}, num_tokens_after_padding: {num_tokens_after_padding}")
-        return (ubatch_slices, num_pad_tokens, num_tokens_after_padding)
+        logger.debug(f"ubatch_slices: {ubatch_slices}, ubatch_pad_nums: {ubatch_pad_nums}")
+        return (ubatch_slices, ubatch_pad_nums, num_tokens_after_padding)
 
     def _init_mrope_positions(self, req_state: CachedRequestState):
         image_grid_thw = []
@@ -805,7 +793,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self.query_start_loc.copy_to_gpu()
         query_start_loc = self.query_start_loc.gpu[:num_reqs + 1]
 
-        ubatch_slices, num_pad_tokens, num_tokens_after_padding = \
+        ubatch_slices, ubatch_pad_nums, num_tokens_after_padding = \
             self._ubatch_split(max_num_scheduled_tokens,
                                scheduler_output)
 
@@ -1005,7 +993,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         return (attn_metadata, logits_indices, spec_decode_metadata,
                 num_scheduled_tokens, spec_decode_common_attn_metadata,
                 max_num_scheduled_tokens, ubatch_slices,
-                num_pad_tokens, num_tokens_after_padding)
+                ubatch_pad_nums, num_tokens_after_padding)
 
     def _compute_cascade_attn_prefix_len(
         self,
@@ -1552,7 +1540,18 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         return num_dp_pad_tokens + num_pad_tokens, num_tokens_after_padding
 
+
     def get_dp_padding_ubatch(
+            self,
+            ubatch_slices: Optional[UBatchSlices]) -> tuple[int, Optional[torch.Tensor]]:
+        # implement this function
+        # ubatch_pad_nums should be a list padding num, one for each ubatch slice.
+        # num_tokens_after_padding should be a Tensor of final num_token that all ubatch slice eventually will be padded to
+        # the padding target is the max token length (derived from UbatchSlice::token_slice) among all ubatches of all dp ranks
+        return ubatch_pad_nums, num_tokens_after_padding
+
+
+    def old_get_dp_padding_ubatch(
             self,
             ubatch_slices: Optional[UBatchSlices]) -> tuple[bool, int, Optional[torch.Tensor]]:
         dp_size = self.vllm_config.parallel_config.data_parallel_size
@@ -1752,16 +1751,15 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # Prepare the decoder inputs.
         (attn_metadata, logits_indices, spec_decode_metadata,
          num_scheduled_tokens_np, spec_decode_common_attn_metadata,
-         max_query_len, ubatch_slices, num_pad_tokens,
+         max_query_len, ubatch_slices, ubatch_pad_nums,
          num_tokens_after_padding) = self._prepare_inputs(scheduler_output)
 
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         num_input_tokens = num_scheduled_tokens
         logger.debug(f"num_input_tokens: {num_input_tokens}")
-        if ubatch_slices and num_pad_tokens > 0:
-            num_input_tokens += num_pad_tokens
-            logger.debug(f"num_input_tokens + num_pad_tokens: {num_input_tokens}")
-            self.pad_out_ubatch_second_stage(ubatch_slices, num_input_tokens)
+        if ubatch_slices:
+            num_input_tokens  = num_tokens_after_padding[0]
+            logger.debug(f"num_input_tokens: {num_input_tokens}")
         elif ubatch_slices is None:
             num_pad, num_tokens_after_padding = self.get_padding(
                 num_input_tokens)
