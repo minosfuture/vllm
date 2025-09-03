@@ -1564,6 +1564,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         max_local_tokens = max(ubatch_num_tokens)
 
         # Use should_ubatch_with_num_tokens to coordinate across DP ranks
+        logger.debug(f"sync: get_dp_padding_ubatch: should_ubatch=True, num_tokens_per_ubatch={max_local_tokens}")
         should_ubatch, num_tokens_across_dp = self.should_ubatch_with_num_tokens(True, max_local_tokens)
         if not should_ubatch:
             return False, [], None
@@ -2552,12 +2553,14 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             skip_eplb: If True, skip EPLB state update.
             is_profile: If True, this is a profile run.
         """
+        logger.debug("execute _dummy_run")
         ubatch_enabled = self.parallel_config.enable_microbatching
         should_ubatch = False
         if ubatch_enabled:
             should_ubatch = num_tokens >= \
                 self.parallel_config.microbatching_token_threshold and \
                 allow_microbatching
+            logger.debug(f"sync: _dummy_run: {should_ubatch=}, num_tokens_per_ubatch={num_tokens//2}")
             should_ubatch, _ = self.should_ubatch_with_num_tokens(should_ubatch, num_tokens // 2,)
         assert cudagraph_runtime_mode in {
             CUDAGraphMode.NONE, CUDAGraphMode.PIECEWISE, CUDAGraphMode.FULL
@@ -2963,6 +2966,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                         enumerate(dummy_encoder_outputs))
 
         # Add `is_profile` here to pre-allocate communication buffers
+        logger.debug(f"profile_run _dummy_run")
         hidden_states, last_hidden_states \
             = self._dummy_run(self.max_num_tokens, is_profile=True)
         if get_pp_group().is_last_rank:
@@ -3080,6 +3084,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 for _ in range(self.compilation_config.cudagraph_num_of_warmups):
                     force_attention = (
                         cudagraph_runtime_mode == CUDAGraphMode.FULL)
+                    logger.debug(f"warmup _dummy_run allow_microbatching")
                     self._dummy_run(num_tokens,
                                     cudagraph_runtime_mode=CUDAGraphMode.NONE,
                                     force_attention=force_attention,
@@ -3087,6 +3092,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                     allow_microbatching=True,
                                     skip_eplb=True)
                 # DBO Only supports running with Full cudagraphs with uniform decode lengths
+                logger.debug(f"capture _dummy_run allow_microbatching")
                 self._dummy_run(num_tokens,
                                 cudagraph_runtime_mode=CUDAGraphMode.FULL,
                                 uniform_decode=True,
@@ -3106,6 +3112,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                 force_attention=force_attention,
                                 uniform_decode=uniform_decode,
                                 skip_eplb=True)
+            logger.debug(f"warmup _dummy_run")
             self._dummy_run(num_tokens,
                             cudagraph_runtime_mode=cudagraph_runtime_mode,
                             uniform_decode=uniform_decode,

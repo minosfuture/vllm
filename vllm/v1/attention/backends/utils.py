@@ -1060,36 +1060,3 @@ def _create_balanced_consecutive_ubatch_slices(
         ubatch_slices.append(ubatch_slice)
 
     return ubatch_slices
-
-
-def _consolidate_to_ranges(indices):
-    """
-    Convert a list of indices to consecutive ranges.
-
-    Args:
-        indices: Sorted list of indices
-
-    Returns:
-        List of (start, end) tuples representing consecutive ranges
-    """
-    if not indices:
-        return []
-
-    ranges = []
-    current_start = indices[0]
-    current_end = indices[0]
-
-    for i in range(1, len(indices)):
-        if indices[i] == current_end + 1:
-            # Consecutive index, extend current range
-            current_end = indices[i]
-        else:
-            # Gap found, close current range and start new one
-            ranges.append((current_start, current_end + 1))
-            current_start = indices[i]
-            current_end = indices[i]
-
-    # Add the final range
-    ranges.append((current_start, current_end + 1))
-
-    return ranges
