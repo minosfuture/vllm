@@ -1605,11 +1605,16 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         num_tokens_unpadded = first_ubatch_num_tokens + second_ubatch_num_tokens
         num_tokens_padded = round_up(num_tokens_unpadded, 2)
+        logger.debug(f"first: {first_ubatch_num_tokens}, second: {second_ubatch_num_tokens}, "
+                     f"num_tokens_unpadded: {num_tokens_unpadded} "
+                     f"num_tokens_padded: {num_tokens_padded}")
         if (self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE
                 and num_tokens_unpadded <= self.cudagraph_batch_sizes[-1]):
             # Add padding to the batch size.
             num_tokens_padded = self.vllm_config.pad_for_cudagraph(
                 num_tokens_unpadded)
+            logger.debug(f"num_tokens_unpadded: {num_tokens_unpadded} "
+                         f"num_tokens_padded: {num_tokens_padded}")
         else:
             # Eager mode.
             # Pad tokens to multiple of tensor_parallel_size when
@@ -1620,6 +1625,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 num_tokens_padded = round_up(num_tokens_unpadded, tp_size)
 
         num_tokens_per_ubatch = num_tokens_padded // 2
+        logger.debug(f"num_tokens_per_ubatch: {num_tokens_per_ubatch}")
 
         should_ubatch = True
 
@@ -1643,8 +1649,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                                 device="cpu",
                                                 dtype=torch.int32)
         num_pad_tokens = max_tokens_across_dp_cpu - num_tokens_per_ubatch
+        logger.debug(f"num_pad_tokens: {num_pad_tokens} ")
         num_pad_tokens = ((num_pad_tokens + num_tokens_per_ubatch) * 2) - \
             num_tokens_unpadded
+        logger.debug(f"num_pad_tokens: {num_pad_tokens} ")
         return should_ubatch, num_pad_tokens, num_tokens_after_padding
 
     # This doesn't actually pad the ubatch slices. It just shifts the
@@ -1673,10 +1681,12 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
     def pad_out_ubatch_second_stage(self, ubatch_slices: UBatchSlices,
                                     num_total_tokens: int):
         # TODO Add asserts to make sure stage one ran
+        logger.debug(f"before padding second slice: {ubatch_slices[1]}")
         padded_second_ubatch_slice = slice(ubatch_slices[1].token_slice.start,
                                            num_total_tokens)
         ubatch_slices[1] = UbatchSlice(padded_second_ubatch_slice,
                                        padded_second_ubatch_slice)
+        logger.debug(f"after padding second slice: {ubatch_slices[1]}")
 
     def should_ubatch_with_num_tokens(self, should_ubatch: bool, num_tokens_per_ubatch: int,
                       ) -> tuple[bool, Optional[torch.Tensor]]:
@@ -1746,13 +1756,16 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         num_input_tokens = num_scheduled_tokens
+        logger.debug(f"num_input_tokens: {num_input_tokens}")
         if ubatch_slices and num_pad_tokens > 0:
             num_input_tokens += num_pad_tokens
+            logger.debug(f"num_input_tokens + num_pad_tokens: {num_input_tokens}")
             self.pad_out_ubatch_second_stage(ubatch_slices, num_input_tokens)
         elif ubatch_slices is None:
             num_pad, num_tokens_after_padding = self.get_padding(
                 num_input_tokens)
             num_input_tokens += num_pad
+        logger.debug(f"finished padding: {ubatch_slices}")
 
         uniform_decode = (max_query_len == self.uniform_decode_query_len) and (
             num_scheduled_tokens == self.input_batch.num_reqs * max_query_len)

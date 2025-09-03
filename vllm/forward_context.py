@@ -115,6 +115,8 @@ class DPMetadata:
         if max_num_tokens_per_ubatch >= 2 * min_num_tokens_per_ubatch:
             logger.debug(f"Aborting ubatching {min_num_tokens_per_ubatch} {max_num_tokens_per_ubatch}")
             return False, None
+
+        logger.debug(f"all reduced num_tokens_per_ubatch, should_ubatch: {tensor}")
         return result, tensor[0, :]
 
     @staticmethod
@@ -255,6 +257,7 @@ def create_forward_context(attn_metadata: Any,
     logger.debug(
         f"[Forward Context] Creating forward context - virtual_engine: {virtual_engine}, "
         f"num_tokens: {num_tokens}, cudagraph_mode: {cudagraph_runtime_mode}, "
+        f"num_tokens_across_dp: {num_tokens_across_dp}, "
         f"has_ubatch_slices: {ubatch_slices is not None}, "
         f"has_batch_descriptor: {batch_descriptor is not None}, "
         f"dp_size: {vllm_config.parallel_config.data_parallel_size}"

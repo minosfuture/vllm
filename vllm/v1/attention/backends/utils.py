@@ -823,6 +823,8 @@ def analyze_workload(
     decode_tokens = int(torch.sum(query_lens[is_decode]))
     prefill_tokens = total_tokens - decode_tokens
 
+    logger.debug(f"query_lens: {query_lens}, seq_lens: {seq_lens}")
+
     # Compute complexity estimates
     compute_complexities = torch.tensor(
         [
