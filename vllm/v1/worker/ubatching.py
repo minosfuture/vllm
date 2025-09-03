@@ -213,14 +213,12 @@ def make_ubatch_contexts(
         torch.cuda.Event() for _ in range(num_micro_batches)
     ]
     device = device or torch.cuda.current_device()
-    logger.debug(f"Using device: {device}")
     # comm_stream = torch.cuda.Stream(device)
 
     assert len(forward_contexts) == 2
 
     ctxs = []
     for i in range(num_micro_batches):
-        logger.debug(f"Creating UBatch context {i}")
         ctx = UBatchContext(id=i,
                             compute_stream=compute_stream,
                             comm_stream=comm_stream,
@@ -234,7 +232,5 @@ def make_ubatch_contexts(
                             enable_async_comms=enable_async_comms,
                             schedule=schedule)
         ctxs.append(ctx)
-        logger.debug(f"UBatch context {i} created successfully")
 
-    logger.debug(f"All {num_micro_batches} ubatch contexts created successfully")
     return ctxs

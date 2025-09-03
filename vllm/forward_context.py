@@ -238,14 +238,9 @@ _forward_context: Optional[ForwardContext] = None
 
 def get_forward_context() -> ForwardContext:
     """Get the current forward context."""
-    logger.debug(f"[Forward Context] Getting forward context, exists: {_forward_context is not None}")
     assert _forward_context is not None, (
         "Forward context is not set. "
         "Please use `set_forward_context` to set the forward context.")
-    if _forward_context:
-        logger.debug(f"[Forward Context] Context details - virtual_engine: {_forward_context.virtual_engine}, "
-                    f"cudagraph_mode: {_forward_context.cudagraph_runtime_mode}, "
-                    f"has_ubatch_slices: {_forward_context.ubatch_slices is not None}")
     return _forward_context
 
 
