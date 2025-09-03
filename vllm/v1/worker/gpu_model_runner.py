@@ -643,6 +643,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         if num_pad_tokens > 0:
             self.pad_out_ubatch_first_stage(ubatch_slices, num_pad_tokens)
 
+        logger.debug(f"ubatch_slices: {ubatch_slices}, num_pad_tokens: {num_pad_tokens}, num_tokens_after_padding: {num_tokens_after_padding}")
         return (ubatch_slices, num_pad_tokens, num_tokens_after_padding)
 
     def _init_mrope_positions(self, req_state: CachedRequestState):

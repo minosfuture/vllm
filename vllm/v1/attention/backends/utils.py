@@ -128,6 +128,10 @@ def _make_metadata_with_slice(
     This function creates a new CommonAttentionMetadata that corresponds to
     the requests included in ubatch_slice
     """
+    logger.debug(
+        f"[UBatch Slice] Creating metadata slice - request_slice: {ubatch_slice.request_slice}, "
+        f"token_slice: {ubatch_slice.token_slice}, has_prefill: {ubatch_slice.has_prefill}"
+    )
 
     request_slice = ubatch_slice.request_slice
     token_slice = ubatch_slice.token_slice
@@ -156,6 +160,12 @@ def _make_metadata_with_slice(
     block_table_tensor = attn_metadata.block_table_tensor[request_slice]
     slot_mapping = attn_metadata.slot_mapping[token_slice]
 
+    logger.debug(
+        f"[UBatch Slice] Created metadata - num_requests: {num_requests}, "
+        f"num_actual_tokens: {num_actual_tokens}, max_query_len: {max_query_len}, "
+        f"max_seq_len: {max_seq_len}"
+    )
+
     return CommonAttentionMetadata(
         query_start_loc=query_start_loc,
         query_start_loc_cpu=query_start_loc_cpu,
@@ -181,15 +191,30 @@ def split_attn_metadata(
 
     Note: This function does not modify common_attn_metadata
     """
+    logger.debug(
+        f"[UBatch Split] Splitting attention metadata into {len(ubatch_slices)} ubatches. "
+        f"Original batch - num_reqs: {common_attn_metadata.num_reqs}, "
+        f"num_tokens: {common_attn_metadata.num_actual_tokens}, "
+        f"max_query_len: {common_attn_metadata.max_query_len}"
+    )
+
     results = []
-    for ubatch_slice in ubatch_slices:
+    for i, ubatch_slice in enumerate(ubatch_slices):
+        logger.debug(f"[UBatch Split] Processing ubatch {i}/{len(ubatch_slices)}")
         result = _make_metadata_with_slice(ubatch_slice, common_attn_metadata)
         # Update the metadata with prefill-aware information
         if ubatch_slice.has_prefill:
             # For prefill ubatches, ensure we have the correct max_query_len
             result.max_query_len = ubatch_slice.max_query_len
+            logger.debug(
+                f"[UBatch Split] Ubatch {i} has prefill, max_query_len: {ubatch_slice.max_query_len}"
+            )
 
         results.append(result)
+
+    logger.debug(
+        f"[UBatch Split] Successfully split metadata into {len(results)} ubatches"
+    )
     return results
 
 
@@ -839,9 +864,20 @@ def create_balanced_ubatch_slices(
     Returns:
         List of UbatchSlice objects for balanced micro-batches
     """
+    logger.debug(
+        f"[UBatch Balance] Creating {num_ubatches} balanced ubatch slices. "
+        f"Total requests: {workload_info.total_requests}, "
+        f"Total tokens: {workload_info.total_tokens}, "
+        f"Decode/Prefill requests: {workload_info.decode_requests}/{workload_info.prefill_requests}, "
+        f"Strategy: {balance_strategy}"
+    )
+
     num_requests = workload_info.total_requests
 
     if num_requests < num_ubatches:
+        logger.debug(
+            f"[UBatch Balance] Few requests ({num_requests} < {num_ubatches}), creating single request ubatches"
+        )
         # If we have fewer requests than ubatches, create one ubatch per request
         return _create_single_request_ubatches(workload_info)
 
@@ -851,9 +887,15 @@ def create_balanced_ubatch_slices(
     )
 
     if not has_mixed_workload:
+        logger.debug(
+            f"[UBatch Balance] Uniform workload detected, using simple consecutive splitting"
+        )
         # For uniform workloads (all decode or all prefill), use simple consecutive splitting
         return _create_simple_consecutive_ubatch_slices(workload_info, num_ubatches)
 
+    logger.debug(
+        f"[UBatch Balance] Mixed workload detected, using balanced consecutive splitting"
+    )
     # For mixed workloads, use balanced splitting
     return _create_balanced_consecutive_ubatch_slices(
         workload_info, num_ubatches, balance_strategy
@@ -889,6 +931,9 @@ def _create_simple_consecutive_ubatch_slices(
 ) -> list[UbatchSlice]:
     """Create consecutive ubatch slices for uniform workloads."""
     num_requests = workload_info.total_requests
+    logger.debug(
+        f"[UBatch Simple] Creating {num_ubatches} simple consecutive slices for {num_requests} requests"
+    )
 
     ubatch_slices = []
 
@@ -919,6 +964,11 @@ def _create_simple_consecutive_ubatch_slices(
             max_query_len=int(torch.max(slice_query_lens)),
         )
         ubatch_slices.append(ubatch_slice)
+        logger.debug(
+            f"[UBatch Simple] Ubatch {i}: requests [{request_start}:{request_end}], "
+            f"tokens [{token_start}:{token_end}], complexity: {ubatch_slice.compute_complexity:.2f}, "
+            f"has_prefill: {ubatch_slice.has_prefill}"
+        )
 
     return ubatch_slices
 

@@ -8,6 +8,9 @@ import torch
 from vllm import forward_context
 from vllm.forward_context import ForwardContext
 from vllm.utils import current_stream
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
 
 _THREAD_ID_TO_CONTEXT: dict = {}
 _CURRENT_CONTEXTS: list[Optional['UBatchContext']] = [None, None]
@@ -55,25 +58,33 @@ class UBatchContext:
 
     def __enter__(self):
         global _CURRENT_CONTEXTS, _THREAD_ID_TO_CONTEXT
+        logger.debug(f"[UBatch {self.id}] Entering context, thread_id={threading.get_ident()}")
         _THREAD_ID_TO_CONTEXT[threading.get_ident()] = self.id
         _CURRENT_CONTEXTS[self.id] = self
+        logger.debug(f"[UBatch {self.id}] Waiting at ready_barrier")
         self.ready_barrier.wait()
+        logger.debug(f"[UBatch {self.id}] Passed ready_barrier, waiting for cpu_wait_event")
 
         self.cpu_wait_event.wait()
         self.cpu_wait_event.clear()
+        logger.debug(f"[UBatch {self.id}] CPU wait event cleared, restoring context")
         self._restore_context()
         # Assume we start on the compute stream
         assert current_stream() == self.compute_stream
+        logger.debug(f"[UBatch {self.id}] Context entered successfully on compute stream")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         global _CURRENT_CONTEXTS, _THREAD_ID_TO_CONTEXT
+        logger.debug(f"[UBatch {self.id}] Exiting context, thread_id={threading.get_ident()}")
         _CURRENT_CONTEXTS[self.id] = None
         del _THREAD_ID_TO_CONTEXT[threading.get_ident()]
+        logger.debug(f"[UBatch {self.id}] Setting cpu_signal_event")
         self.cpu_signal_event.set()
         self.cpu_wait_event.clear()
         self.current_stream = self.compute_stream
         torch.cuda.set_stream(self.current_stream)
+        logger.debug(f"[UBatch {self.id}] Context exited successfully")
         return False
 
     def _restore_context(self):
@@ -192,6 +203,8 @@ def make_ubatch_contexts(
     """
     Create a context manager for micro-batching synchronization.
     """
+    logger.debug(f"Creating {num_micro_batches} ubatch contexts with schedule={schedule}, async_comms={enable_async_comms}")
+
     cpu_events = [threading.Event() for _ in range(num_micro_batches)]
     gpu_comm_done_events = [
         torch.cuda.Event() for _ in range(num_micro_batches)
@@ -200,12 +213,14 @@ def make_ubatch_contexts(
         torch.cuda.Event() for _ in range(num_micro_batches)
     ]
     device = device or torch.cuda.current_device()
+    logger.debug(f"Using device: {device}")
     # comm_stream = torch.cuda.Stream(device)
 
     assert len(forward_contexts) == 2
 
     ctxs = []
     for i in range(num_micro_batches):
+        logger.debug(f"Creating UBatch context {i}")
         ctx = UBatchContext(id=i,
                             compute_stream=compute_stream,
                             comm_stream=comm_stream,
@@ -219,5 +234,7 @@ def make_ubatch_contexts(
                             enable_async_comms=enable_async_comms,
                             schedule=schedule)
         ctxs.append(ctx)
+        logger.debug(f"UBatch context {i} created successfully")
 
+    logger.debug(f"All {num_micro_batches} ubatch contexts created successfully")
     return ctxs
