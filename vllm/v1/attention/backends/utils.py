@@ -1025,6 +1025,7 @@ def _create_balanced_consecutive_ubatch_slices(
     if split_points[-1] != num_requests:
         split_points.append(num_requests)
 
+    logger.info("[UBatch Balance] Split points: %s", split_points)
     # Create ubatch slices from consecutive segments
     ubatch_slices = []
 

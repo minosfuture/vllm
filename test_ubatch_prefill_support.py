@@ -120,7 +120,7 @@ def test_balanced_ubatch_creation():
     )
 
     print(f"\nUbatch slices (4 ubatches - one per request):")
-    assert len(ubatch_slices_4) == 4
+    assert len(ubatch_slices_4) == 4, "Expected 4 ubatches, received: " + str(len(ubatch_slices_4))
     for i, ubatch in enumerate(ubatch_slices_4):
         print(f"  Ubatch {i}: requests={ubatch.request_slice}, "
               f"tokens={ubatch.token_slice}")

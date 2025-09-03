@@ -592,7 +592,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
     def _ubatch_split(
         self, max_num_scheduled_tokens: int,
         scheduler_output: "SchedulerOutput"
-    ) -> tuple[Optional[UBatchSlices], int, Optional[torch.Tensor]]:
+    ) -> tuple[Optional[UBatchSlices], list[int], Optional[torch.Tensor]]:
         # Don't bother with the should_ubatch handshaking unless microbatching
         # is enabled
         if not self.parallel_config.enable_microbatching:
@@ -607,28 +607,28 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             total_num_scheduled_tokens >= \
             self.parallel_config.microbatching_token_threshold
 
-        # Don't require max_num_scheduled_tokens == 1 anymore for prefill support
+        if not should_attempt_ubatching:
+            return (None, [], None)
 
         ubatch_slices = None
-        if should_attempt_ubatching:
-            # Get the number of scheduled tokens for each request
-            req_ids = self.input_batch.req_ids
-            tokens = [scheduler_output.num_scheduled_tokens[i] for i in req_ids]
-            query_lens = torch.tensor(tokens, dtype=torch.int32)
+        # Get the number of scheduled tokens for each request
+        req_ids = self.input_batch.req_ids
+        tokens = [scheduler_output.num_scheduled_tokens[i] for i in req_ids]
+        query_lens = torch.tensor(tokens, dtype=torch.int32)
 
-            # Get sequence lengths for compute complexity estimation
-            seq_lens = torch.tensor([
-                self.input_batch.num_computed_tokens_cpu[i] + tokens[i]
-                for i in range(num_reqs)
-            ], dtype=torch.int32)
+        # Get sequence lengths for compute complexity estimation
+        seq_lens = torch.tensor([
+            self.input_batch.num_computed_tokens_cpu[i] + tokens[i]
+            for i in range(num_reqs)
+        ], dtype=torch.int32)
 
-            # Analyze the workload characteristics and create balanced ubatches
-            workload_info = analyze_workload(query_lens, seq_lens)
-            ubatch_slices = create_balanced_ubatch_slices(
-                workload_info,
-                num_ubatches=2,
-                balance_strategy="compute_complexity"
-            )
+        # Analyze the workload characteristics and create balanced ubatches
+        workload_info = analyze_workload(query_lens, seq_lens)
+        ubatch_slices = create_balanced_ubatch_slices(
+            workload_info,
+            num_ubatches=2,
+            balance_strategy="compute_complexity"
+        )
 
         ubatch_pad_nums, num_tokens_after_padding = self.get_dp_padding_ubatch(ubatch_slices)
 
@@ -1543,11 +1543,40 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
     def get_dp_padding_ubatch(
             self,
-            ubatch_slices: Optional[UBatchSlices]) -> tuple[int, Optional[torch.Tensor]]:
-        # implement this function
+            ubatch_slices: UBatchSlices) -> tuple[list[int], Optional[torch.Tensor]]:
+        # Return:
         # ubatch_pad_nums should be a list padding num, one for each ubatch slice.
         # num_tokens_after_padding should be a Tensor of final num_token that all ubatch slice eventually will be padded to
         # the padding target is the max token length (derived from UbatchSlice::token_slice) among all ubatches of all dp ranks
+
+        dp_size = self.vllm_config.parallel_config.data_parallel_size
+
+        # Calculate num_tokens for each ubatch slice
+        ubatch_num_tokens = []
+        for ubatch_slice in ubatch_slices:
+            num_tokens = ubatch_slice.token_slice.stop - ubatch_slice.token_slice.start
+            ubatch_num_tokens.append(num_tokens)
+
+        # Get the maximum number of tokens for coordination across DP ranks
+        max_local_tokens = max(ubatch_num_tokens)
+
+        # Use should_ubatch_with_num_tokens to coordinate across DP ranks
+        _, num_tokens_across_dp = self.should_ubatch_with_num_tokens(True, max_local_tokens)
+
+        # Find the global maximum across all DP ranks
+        max_tokens_across_dp_cpu = torch.max(num_tokens_across_dp).item()
+
+        # Create the final padding target tensor
+        num_tokens_after_padding = torch.tensor([max_tokens_across_dp_cpu] * dp_size,
+                                               device="cpu",
+                                               dtype=torch.int32)
+
+        # Calculate padding for each ubatch slice
+        ubatch_pad_nums = []
+        for num_tokens in ubatch_num_tokens:
+            pad_tokens = max_tokens_across_dp_cpu - num_tokens
+            ubatch_pad_nums.append(pad_tokens)
+
         return ubatch_pad_nums, num_tokens_after_padding
 
 
