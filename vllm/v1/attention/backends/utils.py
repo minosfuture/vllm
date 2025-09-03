@@ -195,7 +195,8 @@ def split_attn_metadata(
         f"[UBatch Split] Splitting attention metadata into {len(ubatch_slices)} ubatches. "
         f"Original batch - num_reqs: {common_attn_metadata.num_reqs}, "
         f"num_tokens: {common_attn_metadata.num_actual_tokens}, "
-        f"max_query_len: {common_attn_metadata.max_query_len}"
+        f"max_query_len: {common_attn_metadata.max_query_len}, "
+        f"query_start_loc: {common_attn_metadata.query_start_loc_cpu}"
     )
 
     results = []
@@ -884,20 +885,20 @@ def create_balanced_ubatch_slices(
         return _create_single_request_ubatches(workload_info)
 
     # Check if this is a mixed workload that needs intelligent splitting
-    has_mixed_workload = (
-        workload_info.prefill_requests > 0 and workload_info.decode_requests > 0
-    )
+        #has_mixed_workload = (
+        #    workload_info.prefill_requests > 0 and workload_info.decode_requests > 0
+        #)
 
-    if not has_mixed_workload:
-        logger.debug(
-            f"[UBatch Balance] Uniform workload detected, using simple consecutive splitting"
-        )
-        # For uniform workloads (all decode or all prefill), use simple consecutive splitting
-        return _create_simple_consecutive_ubatch_slices(workload_info, num_ubatches)
+        #if not has_mixed_workload:
+        #    logger.debug(
+        #        f"[UBatch Balance] Uniform workload detected, using simple consecutive splitting"
+        #    )
+        #    # For uniform workloads (all decode or all prefill), use simple consecutive splitting
+        #    return _create_simple_consecutive_ubatch_slices(workload_info, num_ubatches)
 
-    logger.debug(
-        f"[UBatch Balance] Mixed workload detected, using balanced consecutive splitting"
-    )
+        #logger.debug(
+        #    f"[UBatch Balance] Mixed workload detected, using balanced consecutive splitting"
+        #)
     # For mixed workloads, use balanced splitting
     return _create_balanced_consecutive_ubatch_slices(
         workload_info, num_ubatches, balance_strategy
@@ -989,12 +990,12 @@ def _create_balanced_consecutive_ubatch_slices(
     num_requests = workload_info.total_requests
 
     # Handle edge cases
-    if num_requests <= num_ubatches:
-        return _create_single_request_ubatches(workload_info)
+    #if num_requests <= num_ubatches:
+    #    return _create_single_request_ubatches(workload_info)
 
-    # Use simple approach for small batches
-    if num_requests <= 32:
-        return _create_simple_consecutive_ubatch_slices(workload_info, num_ubatches)
+    ## Use simple approach for small batches
+    #if num_requests <= 32:
+    #    return _create_simple_consecutive_ubatch_slices(workload_info, num_ubatches)
 
     # Choose weights based on strategy
     if balance_strategy == "compute_complexity":
