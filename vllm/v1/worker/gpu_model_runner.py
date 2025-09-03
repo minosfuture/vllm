@@ -630,7 +630,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             balance_strategy="compute_complexity"
         )
 
-        ubatch_pad_nums, num_tokens_after_padding = self.get_dp_padding_ubatch(ubatch_slices)
+        should_ubatch, ubatch_pad_nums, num_tokens_after_padding = self.get_dp_padding_ubatch(ubatch_slices)
+        if not should_ubatch: # could not agree between dp ranks
+            return (None, [], None)
+
 
         logger.debug(f"ubatch_slices: {ubatch_slices}, ubatch_pad_nums: {ubatch_pad_nums}")
         return (ubatch_slices, ubatch_pad_nums, num_tokens_after_padding)
@@ -1543,7 +1546,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
     def get_dp_padding_ubatch(
             self,
-            ubatch_slices: UBatchSlices) -> tuple[list[int], Optional[torch.Tensor]]:
+            ubatch_slices: UBatchSlices) -> tuple[bool, list[int], Optional[torch.Tensor]]:
         # Return:
         # ubatch_pad_nums should be a list padding num, one for each ubatch slice.
         # num_tokens_after_padding should be a Tensor of final num_token that all ubatch slice eventually will be padded to
@@ -1561,7 +1564,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         max_local_tokens = max(ubatch_num_tokens)
 
         # Use should_ubatch_with_num_tokens to coordinate across DP ranks
-        _, num_tokens_across_dp = self.should_ubatch_with_num_tokens(True, max_local_tokens)
+        should_ubatch, num_tokens_across_dp = self.should_ubatch_with_num_tokens(True, max_local_tokens)
+        if not should_ubatch:
+            return False, [], None
 
         # Find the global maximum across all DP ranks
         max_tokens_across_dp_cpu = torch.max(num_tokens_across_dp).item()
@@ -1577,7 +1582,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             pad_tokens = max_tokens_across_dp_cpu - num_tokens
             ubatch_pad_nums.append(pad_tokens)
 
-        return ubatch_pad_nums, num_tokens_after_padding
+        return True, ubatch_pad_nums, num_tokens_after_padding
 
 
     def old_get_dp_padding_ubatch(

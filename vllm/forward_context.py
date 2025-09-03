@@ -15,10 +15,13 @@ from vllm.config import CUDAGraphMode, ParallelConfig, VllmConfig
 from vllm.logger import init_logger
 from typing import TypeAlias
 
+
 @dataclass
 class UbatchSlice:
     request_slice: slice
     token_slice: slice
+
+
 UBatchSlices: TypeAlias = list[UbatchSlice]
 
 if TYPE_CHECKING:
@@ -83,7 +86,9 @@ class DPMetadata:
         Gather the num_tokens across all DP ranks and return results in a
         CPU tensor of size dp_size.
         """
-        logger.debug(f"[Forward Context DP] Gathering tokens across DP - rank: {dp_rank}, size: {dp_size}, num_tokens: {num_tokens}")
+        logger.debug(
+            f"[Forward Context DP] Gathering tokens across DP - rank: {dp_rank}, size: {dp_size}, num_tokens: {num_tokens}"
+        )
         num_tokens_across_dp = [0] * dp_size
         num_tokens_across_dp[dp_rank] = num_tokens
         num_tokens_tensor = torch.tensor(num_tokens_across_dp,
@@ -91,32 +96,40 @@ class DPMetadata:
                                          dtype=torch.int32)
         from vllm.distributed.parallel_state import get_dp_group
         dist.all_reduce(num_tokens_tensor, group=get_dp_group().cpu_group)
-        logger.debug(f"[Forward Context DP] Tokens gathered across DP: {num_tokens_tensor.tolist()}")
+        logger.debug(
+            f"[Forward Context DP] Tokens gathered across DP: {num_tokens_tensor.tolist()}"
+        )
         return num_tokens_tensor
 
     @staticmethod
-    def should_ubatch_across_dp(should_ubatch: bool, num_tokens_per_ubatch: int, dp_size: int,
-                                dp_rank: int) -> tuple[bool, Optional[torch.Tensor]]:
+    def should_ubatch_across_dp(
+            should_ubatch: bool, num_tokens_per_ubatch: int, dp_size: int,
+            dp_rank: int) -> tuple[bool, Optional[torch.Tensor]]:
 
         tensor = torch.zeros(3, dp_size, device="cpu", dtype=torch.int32)
         tensor[0][dp_rank] = num_tokens_per_ubatch
+        logger.debug(f"should_ubatch: {should_ubatch}, dp_rank: {dp_rank}")
         tensor[1][dp_rank] = 1 if should_ubatch else 0
-
 
         from vllm.distributed.parallel_state import get_dp_group
         dist.all_reduce(tensor, group=get_dp_group().cpu_group)
 
-        result: bool = bool(torch.all(tensor[1]== 1).item())
+        logger.debug(f"sync among dp: {tensor}")
+        result: bool = bool(torch.all(tensor[1] == 1).item())
         if not result:
+            logger.debug("not agreed on ubatch")
             return result, None
 
         min_num_tokens_per_ubatch = tensor[0].min().item()
         max_num_tokens_per_ubatch = tensor[0].max().item()
         if max_num_tokens_per_ubatch >= 2 * min_num_tokens_per_ubatch:
-            logger.debug(f"Aborting ubatching {min_num_tokens_per_ubatch} {max_num_tokens_per_ubatch}")
+            logger.debug(
+                f"Aborting ubatching {min_num_tokens_per_ubatch} {max_num_tokens_per_ubatch}"
+            )
             return False, None
 
-        logger.debug(f"all reduced num_tokens_per_ubatch, should_ubatch: {tensor}")
+        logger.debug(
+            f"all reduced num_tokens_per_ubatch, should_ubatch: {tensor}")
         return result, tensor[0, :]
 
     @staticmethod
@@ -130,37 +143,46 @@ class DPMetadata:
         assert parallel_config.data_parallel_size > 1
         dp_size = parallel_config.data_parallel_size
         dp_rank = parallel_config.data_parallel_rank
-        logger.debug(f"[Forward Context DP] Making DP metadata - rank: {dp_rank}, size: {dp_size}")
+        logger.debug(
+            f"[Forward Context DP] Making DP metadata - rank: {dp_rank}, size: {dp_size}"
+        )
 
         if attn_metadata is not None and hasattr(attn_metadata,
                                                  "num_prefill_tokens"):
             # for v0 attention backends
             batchsize = attn_metadata.num_prefill_tokens + \
                 attn_metadata.num_decode_tokens
-            logger.debug(f"[Forward Context DP] Using v0 attention backend - prefill: {attn_metadata.num_prefill_tokens}, decode: {attn_metadata.num_decode_tokens}")
+            logger.debug(
+                f"[Forward Context DP] Using v0 attention backend - prefill: {attn_metadata.num_prefill_tokens}, decode: {attn_metadata.num_decode_tokens}"
+            )
         else:
             # for v1 attention backends or no attn_metadata
             batchsize = num_tokens
-            logger.debug(f"[Forward Context DP] Using v1 attention backend or no attn_metadata - batchsize: {batchsize}")
+            logger.debug(
+                f"[Forward Context DP] Using v1 attention backend or no attn_metadata - batchsize: {batchsize}"
+            )
 
         # If num_tokens_across_dp is None, it will be computed by all_reduce
         # Otherwise, num_tokens_across_dp[dp_rank] should be equal to batchsize
         assert (num_tokens_across_dp is None
                 or num_tokens_across_dp[dp_rank] == batchsize)
         if num_tokens_across_dp is None:
-            logger.debug(f"[Forward Context DP] Computing tokens across DP via all_reduce")
+            logger.debug(
+                f"[Forward Context DP] Computing tokens across DP via all_reduce"
+            )
             num_tokens_across_dp = DPMetadata.num_tokens_across_dp(
                 batchsize, dp_size, dp_rank)
         else:
-            logger.debug(f"[Forward Context DP] Using provided tokens across DP: {num_tokens_across_dp.tolist()}")
+            logger.debug(
+                f"[Forward Context DP] Using provided tokens across DP: {num_tokens_across_dp.tolist()}"
+            )
 
         max_tokens_across_dp_cpu = torch.max(num_tokens_across_dp)
         cu_tokens_across_dp_cpu = torch.cumsum(num_tokens_across_dp, dim=0)
 
         logger.debug(
             f"[Forward Context DP] DP metadata created - max_tokens: {max_tokens_across_dp_cpu.item()}, "
-            f"cumulative_tokens: {cu_tokens_across_dp_cpu.tolist()}"
-        )
+            f"cumulative_tokens: {cu_tokens_across_dp_cpu.tolist()}")
         return DPMetadata(max_tokens_across_dp_cpu, cu_tokens_across_dp_cpu,
                           num_tokens_across_dp)
 
@@ -217,7 +239,8 @@ class ForwardContext:
     attention layer to its attention metadata
     set dynamically for each forward pass
     """
-    attn_metadata: Union["AttentionMetadata", dict[str, "AttentionMetadata"], list[dict[str, "AttentionMetadata"]]]
+    attn_metadata: Union["AttentionMetadata", dict[str, "AttentionMetadata"],
+                         list[dict[str, "AttentionMetadata"]]]
     # TODO: remove after making all virtual_engines share the same kv cache
     virtual_engine: int  # set dynamically for each forward pass
     # set dynamically for each forward pass
@@ -246,43 +269,48 @@ def get_forward_context() -> ForwardContext:
     return _forward_context
 
 
-def create_forward_context(attn_metadata: Any,
-                           vllm_config: VllmConfig,
-                           virtual_engine: int = 0,
-                           num_tokens: Optional[int] = None,
-                           num_tokens_across_dp: Optional[torch.Tensor] = None,
-                           cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
-                           batch_descriptor: Optional[BatchDescriptor] = None,
-                           ubatch_slices: Optional[UBatchSlices] = None):
+def create_forward_context(
+        attn_metadata: Any,
+        vllm_config: VllmConfig,
+        virtual_engine: int = 0,
+        num_tokens: Optional[int] = None,
+        num_tokens_across_dp: Optional[torch.Tensor] = None,
+        cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
+        batch_descriptor: Optional[BatchDescriptor] = None,
+        ubatch_slices: Optional[UBatchSlices] = None):
     logger.debug(
         f"[Forward Context] Creating forward context - virtual_engine: {virtual_engine}, "
         f"num_tokens: {num_tokens}, cudagraph_mode: {cudagraph_runtime_mode}, "
         f"num_tokens_across_dp: {num_tokens_across_dp}, "
         f"has_ubatch_slices: {ubatch_slices is not None}, "
         f"has_batch_descriptor: {batch_descriptor is not None}, "
-        f"dp_size: {vllm_config.parallel_config.data_parallel_size}"
-    )
+        f"dp_size: {vllm_config.parallel_config.data_parallel_size}")
 
     dp_metadata: Optional[DPMetadata] = None
     if vllm_config.parallel_config.data_parallel_size > 1 and (
             attn_metadata is not None or num_tokens is not None):
-        logger.debug(f"[Forward Context] Creating DP metadata for multi-rank setup")
+        logger.debug(
+            f"[Forward Context] Creating DP metadata for multi-rank setup")
         dp_metadata = DPMetadata.make(vllm_config.parallel_config,
                                       attn_metadata, num_tokens or 0,
                                       num_tokens_across_dp)
-        logger.debug(f"[Forward Context] DP metadata created - max_tokens_across_dp: {dp_metadata.max_tokens_across_dp_cpu}")
+        logger.debug(
+            f"[Forward Context] DP metadata created - max_tokens_across_dp: {dp_metadata.max_tokens_across_dp_cpu}"
+        )
 
     if ubatch_slices:
-        logger.debug(f"[Forward Context] UBatch slices provided: {len(ubatch_slices)} slices")
+        logger.debug(
+            f"[Forward Context] UBatch slices provided: {len(ubatch_slices)} slices"
+        )
 
     context = ForwardContext(no_compile_layers=vllm_config.compilation_config.
-                          static_forward_context,
-                          virtual_engine=virtual_engine,
-                          attn_metadata=attn_metadata,
-                          dp_metadata=dp_metadata,
-                          cudagraph_runtime_mode=cudagraph_runtime_mode,
-                          batch_descriptor=batch_descriptor,
-                          ubatch_slices=ubatch_slices)
+                             static_forward_context,
+                             virtual_engine=virtual_engine,
+                             attn_metadata=attn_metadata,
+                             dp_metadata=dp_metadata,
+                             cudagraph_runtime_mode=cudagraph_runtime_mode,
+                             batch_descriptor=batch_descriptor,
+                             ubatch_slices=ubatch_slices)
 
     logger.debug(f"[Forward Context] Forward context created successfully")
     return context
@@ -296,17 +324,14 @@ def override_forward_context(forward_context: Optional[ForwardContext]):
     """
     global _forward_context
     prev_context = _forward_context
-    logger.debug(
-        f"[Forward Context] Overriding context - "
-        f"prev_context_exists: {prev_context is not None}, "
-        f"new_context_exists: {forward_context is not None}"
-    )
+    logger.debug(f"[Forward Context] Overriding context - "
+                 f"prev_context_exists: {prev_context is not None}, "
+                 f"new_context_exists: {forward_context is not None}")
     if forward_context:
         logger.debug(
             f"[Forward Context] New context details - virtual_engine: {forward_context.virtual_engine}, "
             f"cudagraph_mode: {forward_context.cudagraph_runtime_mode}, "
-            f"has_ubatch_slices: {forward_context.ubatch_slices is not None}"
-        )
+            f"has_ubatch_slices: {forward_context.ubatch_slices is not None}")
     _forward_context = forward_context
     try:
         yield
@@ -336,8 +361,7 @@ def set_forward_context(
         f"num_tokens: {num_tokens}, "
         f"num_tokens_across_dp: {num_tokens_across_dp}, "
         f"batch_descriptor: {batch_descriptor}, "
-        f"has_ubatch_slices: {ubatch_slices is not None}"
-    )
+        f"has_ubatch_slices: {ubatch_slices is not None}")
 
     global forward_start_time
     need_to_track_batchsize = track_batchsize and attn_metadata is not None
@@ -348,8 +372,8 @@ def set_forward_context(
     forward_context = create_forward_context(attn_metadata, vllm_config,
                                              virtual_engine, num_tokens,
                                              num_tokens_across_dp,
-                                             cudagraph_runtime_mode, batch_descriptor,
-                                             ubatch_slices)
+                                             cudagraph_runtime_mode,
+                                             batch_descriptor, ubatch_slices)
 
     logger.debug(f"[Forward Context] Entering forward context override")
     try:
@@ -377,7 +401,9 @@ def set_forward_context(
             # time measurement is in milliseconds
             forward_time_ms = (now - forward_start_time) * 1000
             batchsize_forward_time[batchsize].append(forward_time_ms)
-            logger.debug(f"[Forward Context] Forward pass completed - batchsize: {batchsize}, time: {forward_time_ms:.2f}ms")
+            logger.debug(
+                f"[Forward Context] Forward pass completed - batchsize: {batchsize}, time: {forward_time_ms:.2f}ms"
+            )
             if now - last_logging_time > batchsize_logging_interval:
                 last_logging_time = now
                 forward_stats = []
