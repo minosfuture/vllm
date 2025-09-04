@@ -661,7 +661,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                                 dp_size,
                                                 device="cpu",
                                                 dtype=torch.int32)
-        num_pad_tokens = num_tokens_after_padding - \
+        num_pad_tokens = num_tokens_after_padding[:len(scheduled_tokens_ubatch)] - \
             torch.tensor(scheduled_tokens_ubatch, device="cpu", dtype=torch.int32)
         return should_ubatch, num_pad_tokens, num_tokens_after_padding
 
