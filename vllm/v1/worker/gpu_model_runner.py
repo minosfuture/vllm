@@ -588,7 +588,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
     def try_ubatch_balanced_split(self, num_scheduled_tokens: np.ndarray) -> tuple[bool, int, list[int]]:
         # returned [should_ubatch, start index of the second ubatch, list of scheduled tokens num]
         if len(num_scheduled_tokens) < 2:
-            return False, []
+            return False, 0, []
         cumsum = np.cumsum(num_scheduled_tokens)
         total = cumsum[-1]
         # Exclude the last index to avoid empty right subarray
