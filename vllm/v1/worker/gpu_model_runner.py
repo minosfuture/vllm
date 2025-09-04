@@ -671,11 +671,12 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self, max_num_scheduled_tokens: int,
         num_scheduled_tokens: np.ndarray,
         scheduler_output: "SchedulerOutput"
-    ) -> tuple[Optional[UBatchSlices], int, Optional[torch.Tensor], Optional[UBatchSlices]]:
+    ) -> tuple[Optional[UBatchSlices], int, Optional[torch.Tensor], Optional[UBatchSlices], Optional[torch.Tensor]]:
         # Don't bother with the should_ubatch handshaking unless microbatching
         # is enabled
+        no_ubatch_res = (None, 0, None, None, None)
         if not self.parallel_config.enable_microbatching:
-            return (None, 0, None)
+            return no_ubatch_res
         logger.debug("dbg: _ubatch_split enable_microbatching")
 
         # Check preconditions for microbatching
@@ -727,7 +728,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
          num_tokens_after_padding) = self.get_dp_padding_ubatch(total_num_scheduled_tokens,
                                                                 should_attempt_ubatching)
         if not should_ubatch:
-            return (None, 0, None)
+            return no_ubatch_res
 
         # This doesn't actually pad the ubatch slices. It just initializes the
         # split point to the padded value so that padding can be applied
