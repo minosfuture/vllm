@@ -673,8 +673,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
     ) -> tuple[Optional[UBatchSlices], int, Optional[torch.Tensor]]:
         # Don't bother with the should_ubatch handshaking unless microbatching
         # is enabled
+        logger.debug("dbg: _ubatch_split")
         if not self.parallel_config.enable_microbatching:
             return (None, 0, None)
+        logger.debug("dbg: _ubatch_split enable_microbatching")
 
         # Check preconditions for microbatching
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
@@ -687,8 +689,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         should_attempt_ubatching_prefill = \
             self.parallel_config.enable_microbatching and \
             total_num_scheduled_tokens >= \
-            self.parallel_config.microbatching_token_threshold \
-            and max_num_scheduled_tokens == 1
+            self.parallel_config.microbatching_token_threshold
         # need to try close-to-even split first to agree on after-padding ubatch size
         # use scheduled tokens for splitting for now
         # can be optimzied using complexity analysis to approximate computation cost better
@@ -828,6 +829,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             logits_indices, spec_decode_metadata
         ]
         """
+        logger.debug("dbg: _prepare_inputs")
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         assert total_num_scheduled_tokens > 0
         num_reqs = self.input_batch.num_reqs
