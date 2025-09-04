@@ -303,4 +303,8 @@ class UBatchWrapper:
                 dp_metadata=dp_metadata,
                 batch_descriptor=batch_descriptor,
                 cudagraph_runtime_mode=CUDAGraphMode.NONE)
+            # NOTE(minosfuture): prefill should execute this branch
+            # without cuda graph
+            # with deepep_ht ideally
+            logger.debug(f"dbg: _run_ubatches without cuda graph")
             return self._run_ubatches(ubatch_metadata, self.model)

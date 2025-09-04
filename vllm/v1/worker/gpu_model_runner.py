@@ -584,8 +584,88 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # Refresh batch metadata with any pending updates.
         self.input_batch.refresh_metadata()
 
+
+    def try_ubatch_balanced_split(num_scheduled_tokens: np.narray) -> list[int]:
+        cumsum = np.cumsum(num_tokens, dtype=cumsum_dtype)
+        total = cumsum[-1]
+        # Exclude the last index to avoid empty right subarray
+        diffs = np.abs(cumsum[:-1] - (total - cumsum[:-1]))
+        split_index = np.argmin(diffs)
+        sum1 = cumsum[split_index]
+        sum2 = total - sum1
+        return [sum1, sum2]
+
+
+    def get_dp_padding_ubatch_prefill(
+        max_scheduled_tokens_ubatch: int,
+        scheduled_tokens_ubatch: list[int],
+        should_attempt_ubatching,
+    ) -> tuple[bool, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        dp_size = self.vllm_config.parallel_config.data_parallel_size
+        no_ubatch_res = (False, None, None)
+
+        if dp_size == 1:
+            return no_ubatch_res
+
+        if not should_attempt_ubatching:
+            # necessary calls for rdvz
+            (should_ubatch,
+             num_tokens_across_dp) = self.should_ubatch_with_num_tokens(
+                 False, 0, 0)
+            assert should_ubatch is False
+            assert num_tokens_across_dp is None
+            return no_ubatch_res
+
+        num_tokens_unpadded = max_scheduled_tokens_ubatch * 2
+        num_tokens_padded = round_up(num_tokens_unpadded, 2)
+        if (False # no cuda graph support for prefill ubatching yet
+            and (self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE
+                 and num_tokens_unpadded <= self.cudagraph_batch_sizes[-1])):
+            # Add padding to the batch size.
+            num_tokens_padded = self.vllm_config.pad_for_cudagraph(
+                num_tokens_unpadded)
+        else:
+            # Eager mode.
+            # Pad tokens to multiple of tensor_parallel_size when
+            # enabled collective fusion for SP
+            tp_size = self.vllm_config.parallel_config.tensor_parallel_size
+            if self.vllm_config.compilation_config.pass_config. \
+                enable_sequence_parallelism and tp_size > 1:
+                num_tokens_padded = round_up(num_tokens_unpadded, tp_size)
+
+        num_tokens_per_ubatch = num_tokens_padded // 2
+
+        should_ubatch = True
+
+        # Sanity Check that cudagraph padding isn't giving us an empty second
+        # ubatch. Abort if so
+        if num_tokens_unpadded <= num_tokens_padded // 2:
+            should_ubatch = False
+
+        # Note that we compute the number of padded tokens per ubatch
+        (should_ubatch,
+         num_tokens_across_dp) = self.should_ubatch_with_num_tokens(should_ubatch,
+            # for orig, should use min(scheduled_tokens_ubatch) instead?
+            num_tokens_unpadded // 2, num_tokens_per_ubatch)
+        if not should_ubatch:
+            assert num_tokens_across_dp is None
+            return no_ubatch_res
+
+        assert num_tokens_across_dp is not None
+
+        max_tokens_across_dp_cpu = torch.max(num_tokens_across_dp).item()
+        num_tokens_after_padding = torch.tensor([max_tokens_across_dp_cpu] *
+                                                dp_size,
+                                                device="cpu",
+                                                dtype=torch.int32)
+        num_pad_tokens = num_tokens_after_padding - \
+            torch.tensor(scheduled_tokens_ubatch, device="cpu", dtype=torch.int32)
+        return should_ubatch, num_pad_tokens, num_tokens_after_padding
+
+
     def _ubatch_split(
         self, max_num_scheduled_tokens: int,
+        num_scheduled_tokens: np.ndarray,
         scheduler_output: "SchedulerOutput"
     ) -> tuple[Optional[UBatchSlices], int, Optional[torch.Tensor]]:
         # Don't bother with the should_ubatch handshaking unless microbatching
@@ -600,6 +680,26 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             total_num_scheduled_tokens >= \
             self.parallel_config.microbatching_token_threshold \
             and max_num_scheduled_tokens == 1
+
+        should_attempt_ubatching_prefill = \
+            self.parallel_config.enable_microbatching and \
+            total_num_scheduled_tokens >= \
+            self.parallel_config.microbatching_token_threshold \
+            and max_num_scheduled_tokens == 1
+        # need to try close-to-even split first to agree on after-padding ubatch size
+        # use scheduled tokens for splitting for now
+        # can be optimzied using complexity analysis to approximate computation cost better
+        scheduled_tokens_ubatch = self.try_ubatch_balanced_split(num_scheduled_tokens)
+        # then get max_scheduled_tokens_ubatch as the larger one
+        max_scheduled_tokens_ubatch = max(scheduled_tokens_ubatch)
+        (should_ubatch, num_pad_tokens_list, num_tokens_after_padding) = \
+            self.get_dp_padding_ubatch_prefill(max_scheduled_tokens_ubatch,
+                                               scheduled_tokens_ubatch,
+                                               should_attempt_ubatching_prefill)
+        logger.debug(f"dbg: after discussion, {should_ubatch=}, {num_pad_tokens_list=}, "
+            f"{num_tokens_after_padding=}, ({max_scheduled_tokens_ubatch=}, "
+            f"{scheduled_tokens_ubatch=}, {should_attempt_ubatching=})")
+
 
         # Don't microbatch unless every other DP worker is also microbatching
         num_pad_tokens = 0
@@ -792,7 +892,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         ubatch_slices, num_pad_tokens, num_tokens_after_padding = \
             self._ubatch_split(max_num_scheduled_tokens,
-                               scheduler_output)
+                               num_scheduled_tokens,
+                               scheduler_output,)
 
         self.seq_lens.np[:num_reqs] = (
             self.input_batch.num_computed_tokens_cpu[:num_reqs] +
@@ -1570,7 +1671,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             should_ubatch = False
 
         # Note that we compute the number of padded tokens per ubatch
-        (should_ubatch, 
+        (should_ubatch,
          num_tokens_across_dp) = self.should_ubatch_with_num_tokens(should_ubatch,
             num_tokens_unpadded // 2, num_tokens_per_ubatch)
         if not should_ubatch:
@@ -1605,10 +1706,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                       ) -> tuple[bool, Optional[torch.Tensor]]:
         dp_size = self.vllm_config.parallel_config.data_parallel_size
         dp_rank = self.vllm_config.parallel_config.data_parallel_rank
-        return DPMetadata.should_ubatch_across_dp(should_ubatch, 
-                                                  orig_num_tokens_per_ubatch, 
-                                                  padded_num_tokens_per_ubatch, 
-                                                  dp_size, 
+        return DPMetadata.should_ubatch_across_dp(should_ubatch,
+                                                  orig_num_tokens_per_ubatch,
+                                                  padded_num_tokens_per_ubatch,
+                                                  dp_size,
                                                   dp_rank)
 
     def _pool(
@@ -2439,6 +2540,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         assert cudagraph_runtime_mode in {
             CUDAGraphMode.NONE, CUDAGraphMode.PIECEWISE, CUDAGraphMode.FULL
         }
+        logger.debug(f"dbg: dummy_run: {num_tokens=}, "
+            f"{cudagraph_runtime_mode=}, {force_attention=}, {uniform_decode=}, "
+            f"{allow_microbatching=}, {skip_eplb=}, {is_profile=}, {remove_lora=}, "
+            f"{should_ubatch=}")
 
         # Padding for DP
         num_tokens_across_dp = None
@@ -2951,6 +3056,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # decode lengths
         if enable_microbatching and uniform_decode:
             for num_tokens in compilation_cases:
+                logger.debug(f"dbg: capture cuda graph for {num_tokens=}")
                 # If the number of tokens is greater than the microbatching
                 # threshold, don't generate a microbatched cudagraph
                 if (num_tokens
