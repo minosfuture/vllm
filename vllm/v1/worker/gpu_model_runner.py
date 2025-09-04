@@ -585,7 +585,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self.input_batch.refresh_metadata()
 
 
-    def try_ubatch_balanced_split(num_scheduled_tokens: np.narray) -> list[int]:
+    def try_ubatch_balanced_split(self, num_scheduled_tokens: np.ndarray) -> list[int]:
         cumsum = np.cumsum(num_tokens, dtype=cumsum_dtype)
         total = cumsum[-1]
         # Exclude the last index to avoid empty right subarray
@@ -597,6 +597,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
 
     def get_dp_padding_ubatch_prefill(
+        self,
         max_scheduled_tokens_ubatch: int,
         scheduled_tokens_ubatch: list[int],
         should_attempt_ubatching,
