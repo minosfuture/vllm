@@ -843,6 +843,8 @@ def test_hybrid_attention_mamba_tensor_shapes(monkeypatch):
                                ssm_blocks_constant)
 
 def test_ubatch_prefill_split(model_runner):
-    assert model_runner.try_ubatch_balanced_split([1,3,4,5]) == [8, 5]
-    model_runner.try_ubatch_balanced_split([1,3]) == [1,3]
-    model_runner.try_ubatch_balanced_split([2,2,2]) == [2,4]
+    assert model_runner.try_ubatch_balanced_split([1,3,4,5]) == (True, [8, 5])
+    model_runner.try_ubatch_balanced_split([1,3]) == (True, [1,3])
+    model_runner.try_ubatch_balanced_split([2,2,2]) == (True, [2,4])
+    model_runner.try_ubatch_balanced_split([2]) == (False, [])
+    model_runner.try_ubatch_balanced_split([]) == (False, [])

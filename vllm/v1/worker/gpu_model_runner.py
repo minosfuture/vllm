@@ -585,7 +585,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self.input_batch.refresh_metadata()
 
 
-    def try_ubatch_balanced_split(self, num_scheduled_tokens: np.ndarray) -> list[int]:
+    def try_ubatch_balanced_split(self, num_scheduled_tokens: np.ndarray) -> tuple[bool, list[int]]:
+        if len(num_scheduled_tokens) < 2:
+            return False, []
         cumsum = np.cumsum(num_scheduled_tokens)
         total = cumsum[-1]
         # Exclude the last index to avoid empty right subarray
@@ -593,7 +595,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         split_index = np.argmin(diffs)
         sum1 = cumsum[split_index]
         sum2 = total - sum1
-        return [sum1, sum2]
+        return True, [sum1, sum2]
 
 
     def get_dp_padding_ubatch_prefill(
@@ -690,13 +692,13 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # need to try close-to-even split first to agree on after-padding ubatch size
         # use scheduled tokens for splitting for now
         # can be optimzied using complexity analysis to approximate computation cost better
-        scheduled_tokens_ubatch = self.try_ubatch_balanced_split(num_scheduled_tokens)
+        can_split, scheduled_tokens_ubatch = self.try_ubatch_balanced_split(num_scheduled_tokens)
         # then get max_scheduled_tokens_ubatch as the larger one
-        max_scheduled_tokens_ubatch = max(scheduled_tokens_ubatch)
+        max_scheduled_tokens_ubatch = max(scheduled_tokens_ubatch) if scheduled_tokens_ubatch else 0
         (should_ubatch, num_pad_tokens_list, num_tokens_after_padding) = \
             self.get_dp_padding_ubatch_prefill(max_scheduled_tokens_ubatch,
                                                scheduled_tokens_ubatch,
-                                               should_attempt_ubatching_prefill)
+                                               can_split and should_attempt_ubatching_prefill)
         logger.debug(f"dbg: after discussion, {should_ubatch=}, {num_pad_tokens_list=}, "
             f"{num_tokens_after_padding=}, ({max_scheduled_tokens_ubatch=}, "
             f"{scheduled_tokens_ubatch=}, {should_attempt_ubatching=})")
