@@ -586,7 +586,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
 
     def try_ubatch_balanced_split(self, num_scheduled_tokens: np.ndarray) -> list[int]:
-        cumsum = np.cumsum(num_tokens, dtype=cumsum_dtype)
+        cumsum = np.cumsum(num_scheduled_tokens)
         total = cumsum[-1]
         # Exclude the last index to avoid empty right subarray
         diffs = np.abs(cumsum[:-1] - (total - cumsum[:-1]))

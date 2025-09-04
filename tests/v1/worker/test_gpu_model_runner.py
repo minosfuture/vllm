@@ -841,3 +841,8 @@ def test_hybrid_attention_mamba_tensor_shapes(monkeypatch):
                                conv_blocks_constant)
             assert torch.equal(vllm_ctx[layer].kv_cache[0][1][blocks1, :],
                                ssm_blocks_constant)
+
+def test_ubatch_prefill_split(model_runner):
+    assert model_runner.try_ubatch_balanced_split([1,3,4,5]) == [8, 5]
+    model_runner.try_ubatch_balanced_split([1,3]) == [1,3]
+    model_runner.try_ubatch_balanced_split([2,2,2]) == [2,4]
