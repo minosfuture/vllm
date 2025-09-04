@@ -585,7 +585,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self.input_batch.refresh_metadata()
 
 
-    def try_ubatch_balanced_split(self, num_scheduled_tokens: np.ndarray) -> tuple[bool, list[int]]:
+    def try_ubatch_balanced_split(self, num_scheduled_tokens: np.ndarray) -> tuple[bool, int, list[int]]:
+        # returned [should_ubatch, start index of the second ubatch, list of scheduled tokens num]
         if len(num_scheduled_tokens) < 2:
             return False, []
         cumsum = np.cumsum(num_scheduled_tokens)
@@ -595,7 +596,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         split_index = np.argmin(diffs)
         sum1 = cumsum[split_index]
         sum2 = total - sum1
-        return True, [sum1, sum2]
+        return True, split_index + 1, [sum1, sum2]
 
 
     def get_dp_padding_ubatch_prefill(
@@ -670,10 +671,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self, max_num_scheduled_tokens: int,
         num_scheduled_tokens: np.ndarray,
         scheduler_output: "SchedulerOutput"
-    ) -> tuple[Optional[UBatchSlices], int, Optional[torch.Tensor]]:
+    ) -> tuple[Optional[UBatchSlices], int, Optional[torch.Tensor], Optional[UBatchSlices]]:
         # Don't bother with the should_ubatch handshaking unless microbatching
         # is enabled
-        logger.debug("dbg: _ubatch_split")
         if not self.parallel_config.enable_microbatching:
             return (None, 0, None)
         logger.debug("dbg: _ubatch_split enable_microbatching")
@@ -693,15 +693,29 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # need to try close-to-even split first to agree on after-padding ubatch size
         # use scheduled tokens for splitting for now
         # can be optimzied using complexity analysis to approximate computation cost better
-        can_split, scheduled_tokens_ubatch = self.try_ubatch_balanced_split(num_scheduled_tokens)
+        can_split, split_index, scheduled_tokens_ubatch = self.try_ubatch_balanced_split(num_scheduled_tokens)
         # then get max_scheduled_tokens_ubatch as the larger one
         max_scheduled_tokens_ubatch = max(scheduled_tokens_ubatch) if scheduled_tokens_ubatch else 0
+        # NOTE(minosfuture): whatever collective done here (e.g. dp_padding.*)
+        # needs to be duplicated in _dummy_run, otherwise it would hang
         (should_ubatch, num_pad_tokens_list, num_tokens_after_padding) = \
             self.get_dp_padding_ubatch_prefill(max_scheduled_tokens_ubatch,
                                                scheduled_tokens_ubatch,
                                                can_split and should_attempt_ubatching_prefill)
+        ubatch_slices_prefill = []
+        if should_ubatch:
+            first_ubatch_req_slice = slice(0, split_index)
+            second_ubatch_req_slice = slice(split_index, len(num_scheduled_tokens))
+            first_ubatch_token_slice = slice(0, scheduled_tokens_ubatch[0])
+            second_ubatch_token_slice = slice(scheduled_tokens_ubatch[0], scheduled_tokens_ubatch[1])
+            ubatch_slices_prefill = [
+                UbatchSlice(first_ubatch_req_slice, first_ubatch_token_slice),
+                UbatchSlice(second_ubatch_req_slice, second_ubatch_token_slice)
+            ]
+
         logger.debug(f"dbg: after discussion, {should_ubatch=}, {num_pad_tokens_list=}, "
             f"{num_tokens_after_padding=}, ({max_scheduled_tokens_ubatch=}, "
+            f"{ubatch_slices_prefill=}, "
             f"{scheduled_tokens_ubatch=}, {should_attempt_ubatching=})")
 
 
@@ -734,7 +748,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             UbatchSlice(padded_second_ubatch_slice, padded_second_ubatch_slice)
         ]
 
-        return (ubatch_slices, num_pad_tokens, num_tokens_after_padding)
+        return (ubatch_slices, num_pad_tokens, num_tokens_after_padding,
+                ubatch_slices_prefill, num_pad_tokens_list)
 
     def _init_mrope_positions(self, req_state: CachedRequestState):
         image_grid_thw = []
@@ -831,7 +846,6 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         ]
         """
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
-        logger.debug(f"dbg: _prepare_inputs ({total_num_scheduled_tokens=}")
         assert total_num_scheduled_tokens > 0
         num_reqs = self.input_batch.num_reqs
         assert num_reqs > 0
@@ -845,6 +859,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         tokens = [scheduler_output.num_scheduled_tokens[i] for i in req_ids]
         num_scheduled_tokens = np.array(tokens, dtype=np.int32)
         max_num_scheduled_tokens = max(tokens)
+        logger.debug(f"dbg: _prepare_inputs ({total_num_scheduled_tokens=}, {num_scheduled_tokens=})")
 
         # Get request indices.
         # E.g., [2, 5, 3] -> [0, 0, 1, 1, 1, 1, 1, 2, 2, 2]
@@ -896,7 +911,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self.query_start_loc.copy_to_gpu()
         query_start_loc = self.query_start_loc.gpu[:num_reqs + 1]
 
-        ubatch_slices, num_pad_tokens, num_tokens_after_padding = \
+        (ubatch_slices, num_pad_tokens, num_tokens_after_padding, 
+         ubatch_slices_prefill, num_pad_tokens_list) = \
             self._ubatch_split(max_num_scheduled_tokens,
                                num_scheduled_tokens,
                                scheduler_output,)
