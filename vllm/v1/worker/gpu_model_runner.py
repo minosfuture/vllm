@@ -686,23 +686,23 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             self.parallel_config.microbatching_token_threshold \
             and max_num_scheduled_tokens == 1
 
-        #should_attempt_ubatching_prefill = \
-        #    self.parallel_config.enable_microbatching and \
-        #    total_num_scheduled_tokens >= \
-        #    self.parallel_config.microbatching_token_threshold
-        ## need to try close-to-even split first to agree on after-padding ubatch size
-        ## use scheduled tokens for splitting for now
-        ## can be optimzied using complexity analysis to approximate computation cost better
-        #can_split, scheduled_tokens_ubatch = self.try_ubatch_balanced_split(num_scheduled_tokens)
-        ## then get max_scheduled_tokens_ubatch as the larger one
-        #max_scheduled_tokens_ubatch = max(scheduled_tokens_ubatch) if scheduled_tokens_ubatch else 0
-        #(should_ubatch, num_pad_tokens_list, num_tokens_after_padding) = \
-        #    self.get_dp_padding_ubatch_prefill(max_scheduled_tokens_ubatch,
-        #                                       scheduled_tokens_ubatch,
-        #                                       can_split and should_attempt_ubatching_prefill)
-        #logger.debug(f"dbg: after discussion, {should_ubatch=}, {num_pad_tokens_list=}, "
-        #    f"{num_tokens_after_padding=}, ({max_scheduled_tokens_ubatch=}, "
-        #    f"{scheduled_tokens_ubatch=}, {should_attempt_ubatching=})")
+        should_attempt_ubatching_prefill = \
+            self.parallel_config.enable_microbatching and \
+            total_num_scheduled_tokens >= \
+            self.parallel_config.microbatching_token_threshold
+        # need to try close-to-even split first to agree on after-padding ubatch size
+        # use scheduled tokens for splitting for now
+        # can be optimzied using complexity analysis to approximate computation cost better
+        can_split, scheduled_tokens_ubatch = self.try_ubatch_balanced_split(num_scheduled_tokens)
+        # then get max_scheduled_tokens_ubatch as the larger one
+        max_scheduled_tokens_ubatch = max(scheduled_tokens_ubatch) if scheduled_tokens_ubatch else 0
+        (should_ubatch, num_pad_tokens_list, num_tokens_after_padding) = \
+            self.get_dp_padding_ubatch_prefill(max_scheduled_tokens_ubatch,
+                                               scheduled_tokens_ubatch,
+                                               can_split and should_attempt_ubatching_prefill)
+        logger.debug(f"dbg: after discussion, {should_ubatch=}, {num_pad_tokens_list=}, "
+            f"{num_tokens_after_padding=}, ({max_scheduled_tokens_ubatch=}, "
+            f"{scheduled_tokens_ubatch=}, {should_attempt_ubatching=})")
 
 
         # Don't microbatch unless every other DP worker is also microbatching
@@ -830,8 +830,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             logits_indices, spec_decode_metadata
         ]
         """
-        logger.debug("dbg: _prepare_inputs")
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
+        logger.debug(f"dbg: _prepare_inputs ({total_num_scheduled_tokens=}")
         assert total_num_scheduled_tokens > 0
         num_reqs = self.input_batch.num_reqs
         assert num_reqs > 0
@@ -2539,6 +2539,13 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             should_ubatch = num_tokens >= \
                 self.parallel_config.microbatching_token_threshold and \
                 allow_microbatching
+            logger.debug("first discussion for prefill check (will remove)")
+            should_ubatch, _ = self.should_ubatch_with_num_tokens(
+                should_ubatch,
+                num_tokens // 2,
+                num_tokens // 2,
+            )
+            logger.debug("second discussion for decode check")
             should_ubatch, _ = self.should_ubatch_with_num_tokens(
                 should_ubatch,
                 num_tokens // 2,
