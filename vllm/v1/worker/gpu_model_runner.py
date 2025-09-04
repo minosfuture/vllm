@@ -686,26 +686,27 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             self.parallel_config.microbatching_token_threshold \
             and max_num_scheduled_tokens == 1
 
-        should_attempt_ubatching_prefill = \
-            self.parallel_config.enable_microbatching and \
-            total_num_scheduled_tokens >= \
-            self.parallel_config.microbatching_token_threshold
-        # need to try close-to-even split first to agree on after-padding ubatch size
-        # use scheduled tokens for splitting for now
-        # can be optimzied using complexity analysis to approximate computation cost better
-        can_split, scheduled_tokens_ubatch = self.try_ubatch_balanced_split(num_scheduled_tokens)
-        # then get max_scheduled_tokens_ubatch as the larger one
-        max_scheduled_tokens_ubatch = max(scheduled_tokens_ubatch) if scheduled_tokens_ubatch else 0
-        (should_ubatch, num_pad_tokens_list, num_tokens_after_padding) = \
-            self.get_dp_padding_ubatch_prefill(max_scheduled_tokens_ubatch,
-                                               scheduled_tokens_ubatch,
-                                               can_split and should_attempt_ubatching_prefill)
-        logger.debug(f"dbg: after discussion, {should_ubatch=}, {num_pad_tokens_list=}, "
-            f"{num_tokens_after_padding=}, ({max_scheduled_tokens_ubatch=}, "
-            f"{scheduled_tokens_ubatch=}, {should_attempt_ubatching=})")
+        #should_attempt_ubatching_prefill = \
+        #    self.parallel_config.enable_microbatching and \
+        #    total_num_scheduled_tokens >= \
+        #    self.parallel_config.microbatching_token_threshold
+        ## need to try close-to-even split first to agree on after-padding ubatch size
+        ## use scheduled tokens for splitting for now
+        ## can be optimzied using complexity analysis to approximate computation cost better
+        #can_split, scheduled_tokens_ubatch = self.try_ubatch_balanced_split(num_scheduled_tokens)
+        ## then get max_scheduled_tokens_ubatch as the larger one
+        #max_scheduled_tokens_ubatch = max(scheduled_tokens_ubatch) if scheduled_tokens_ubatch else 0
+        #(should_ubatch, num_pad_tokens_list, num_tokens_after_padding) = \
+        #    self.get_dp_padding_ubatch_prefill(max_scheduled_tokens_ubatch,
+        #                                       scheduled_tokens_ubatch,
+        #                                       can_split and should_attempt_ubatching_prefill)
+        #logger.debug(f"dbg: after discussion, {should_ubatch=}, {num_pad_tokens_list=}, "
+        #    f"{num_tokens_after_padding=}, ({max_scheduled_tokens_ubatch=}, "
+        #    f"{scheduled_tokens_ubatch=}, {should_attempt_ubatching=})")
 
 
         # Don't microbatch unless every other DP worker is also microbatching
+        logger.debug(f"dbg: waiting on next discussion")
         num_pad_tokens = 0
         num_tokens_after_padding = None
         (should_ubatch, num_pad_tokens,
@@ -2531,6 +2532,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             is_profile: If True, this is a profile run.
             remove_lora: If False, dummy LoRAs are not destroyed after the run
         """
+        logger.debug(f"dbg: dummy_run")
         ubatch_enabled = self.parallel_config.enable_microbatching
         should_ubatch = False
         if ubatch_enabled:
@@ -2556,6 +2558,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         if not should_ubatch:
             num_pad, num_tokens_across_dp = self.get_dp_padding(num_tokens)
         num_tokens += num_pad
+        logger.debug(f"dbg: dummy_run: {num_pad=}, {num_tokens_across_dp=}, ({num_tokens=})")
 
         # If cudagraph_mode.decode_mode() == FULL and
         # cudagraph_mode.seperate_routine(). This means that we are using
@@ -3044,6 +3047,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
     def _capture_cudagraphs(self, compilation_cases: list[int],
                             cudagraph_runtime_mode: CUDAGraphMode,
                             uniform_decode: bool):
+        logger.debug("dbg: _capture_cudagraphs")
         assert cudagraph_runtime_mode != CUDAGraphMode.NONE and \
             cudagraph_runtime_mode in [CUDAGraphMode.FULL,
                                         CUDAGraphMode.PIECEWISE]
