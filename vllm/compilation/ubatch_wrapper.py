@@ -259,9 +259,10 @@ class UBatchWrapper:
                 return self.cudagraph_wrapper(*args, **kwargs)
 
         attn_metadata = forward_context.attn_metadata
-        # NOTE(minosfuture): need to fix this for prefill ubatch
         num_tokens = (ubatch_slices[0].token_slice.stop -
-                      ubatch_slices[0].token_slice.start) * 2
+                      ubatch_slices[0].token_slice.start) + \
+            (ubatch_slices[1].token_slice.stop
+                - ubatch_slices[1].token_slice.start)
         input_ids = kwargs['input_ids']
         positions = kwargs['positions']
         intermediate_tensors = kwargs['intermediate_tensors']
@@ -307,5 +308,5 @@ class UBatchWrapper:
             # NOTE(minosfuture): prefill should execute this branch
             # without cuda graph
             # with deepep_ht ideally
-            logger.debug(f"dbg: _run_ubatches without cuda graph: {ubatch_metadata=}")
+            logger.debug(f"dbg: _run_ubatches without cuda graph")
             return self._run_ubatches(ubatch_metadata, self.model)

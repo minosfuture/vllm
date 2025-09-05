@@ -1828,10 +1828,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         if ubatch_slices_prefill:
             self.pad_ubatch_slice_prefill(ubatch_slices_prefill, num_pad_tokens_list)
-            num_input_tokens = num_scheduled_tokens + sum(num_pad_tokens_list)
+            #num_input_tokens = num_scheduled_tokens + sum(num_pad_tokens_list)
 
         logger.debug(f"dbg: {ubatch_slices_prefill=} vs. {ubatch_slices=}"
-                     f"{num_tokens_after_padding_prefill=} vs. {num_tokens_after_padding}")
+                     f"{num_tokens_after_padding_prefill=} vs. {num_tokens_after_padding=}")
 
         if self.supports_mm_inputs:
             # Run the multimodal encoder if any.
