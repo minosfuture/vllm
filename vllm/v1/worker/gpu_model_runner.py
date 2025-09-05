@@ -671,10 +671,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self, max_num_scheduled_tokens: int,
         num_scheduled_tokens: np.ndarray,
         scheduler_output: "SchedulerOutput"
-    ) -> tuple[Optional[UBatchSlices], int, Optional[torch.Tensor], Optional[UBatchSlices], Optional[torch.Tensor]]:
+    ) -> tuple[Optional[UBatchSlices], int, Optional[torch.Tensor],
+               Optional[UBatchSlices], Optional[torch.Tensor], Optional[torch.Tensor]]:
         # Don't bother with the should_ubatch handshaking unless microbatching
         # is enabled
-        no_ubatch_res = (None, 0, None, None, None)
+        no_ubatch_res = (None, 0, None, None, None, None)
         if not self.parallel_config.enable_microbatching:
             return no_ubatch_res
         logger.debug("dbg: _ubatch_split enable_microbatching")
@@ -699,7 +700,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         max_scheduled_tokens_ubatch = max(scheduled_tokens_ubatch) if scheduled_tokens_ubatch else 0
         # NOTE(minosfuture): whatever collective done here (e.g. dp_padding.*)
         # needs to be duplicated in _dummy_run, otherwise it would hang
-        (should_ubatch, num_pad_tokens_list, num_tokens_after_padding) = \
+        (should_ubatch, num_pad_tokens_list, num_tokens_after_padding_prefill) = \
             self.get_dp_padding_ubatch_prefill(max_scheduled_tokens_ubatch,
                                                scheduled_tokens_ubatch,
                                                can_split and should_attempt_ubatching_prefill)
@@ -715,7 +716,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             ]
 
         logger.debug(f"dbg: after discussion, {should_ubatch=}, {num_pad_tokens_list=}, "
-            f"{num_tokens_after_padding=}, ({max_scheduled_tokens_ubatch=}, "
+            f"{num_tokens_after_padding_prefill=}, ({max_scheduled_tokens_ubatch=}, "
             f"{ubatch_slices_prefill=}, "
             f"{scheduled_tokens_ubatch=}, {should_attempt_ubatching=})")
 
@@ -749,8 +750,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             UbatchSlice(padded_second_ubatch_slice, padded_second_ubatch_slice)
         ]
 
+        logger.debug(f"dbg: {ubatch_slices=}")
+
         return (ubatch_slices, num_pad_tokens, num_tokens_after_padding,
-                ubatch_slices_prefill, num_pad_tokens_list)
+                ubatch_slices_prefill, num_pad_tokens_list, num_tokens_after_padding_prefill)
 
     def _init_mrope_positions(self, req_state: CachedRequestState):
         image_grid_thw = []
@@ -912,8 +915,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         self.query_start_loc.copy_to_gpu()
         query_start_loc = self.query_start_loc.gpu[:num_reqs + 1]
 
-        (ubatch_slices, num_pad_tokens, num_tokens_after_padding, 
-         ubatch_slices_prefill, num_pad_tokens_list) = \
+        (ubatch_slices, num_pad_tokens, num_tokens_after_padding,
+         ubatch_slices_prefill, num_pad_tokens_list, num_tokens_after_padding_prefill) = \
             self._ubatch_split(max_num_scheduled_tokens,
                                num_scheduled_tokens,
                                scheduler_output,)
@@ -968,8 +971,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 logits_indices)
 
         attn_metadata: PerLayerAttnMetadata = {}
-        if ubatch_slices is not None:
-            attn_metadata = [dict() for _ in range(len(ubatch_slices))]
+        if ubatch_slices_prefill is not None:
+            attn_metadata = [dict() for _ in range(len(ubatch_slices_prefill))]
 
         # Used in the below loop.
         query_start_loc_cpu = self.query_start_loc.cpu[:num_reqs + 1]
@@ -1044,9 +1047,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                         builder,
                     )
 
-                if ubatch_slices is not None:
+                if ubatch_slices_prefill is not None:
                     common_attn_metadata_list = split_attn_metadata(
-                        ubatch_slices, common_attn_metadata)
+                        ubatch_slices_prefill, common_attn_metadata)
                     for ubid, common_attn_metadata in enumerate(
                             common_attn_metadata_list):
                         assert common_attn_metadata.max_query_len == 1
@@ -1073,7 +1076,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         return (attn_metadata, logits_indices, spec_decode_metadata,
                 num_scheduled_tokens, spec_decode_common_attn_metadata,
                 max_num_scheduled_tokens, ubatch_slices, num_pad_tokens,
-                num_tokens_after_padding)
+                num_tokens_after_padding, ubatch_slices_prefill, num_pad_tokens_list,
+                num_tokens_after_padding_prefill)
 
     def _compute_cascade_attn_prefix_len(
         self,
@@ -1724,6 +1728,14 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         ubatch_slices[1] = UbatchSlice(padded_second_ubatch_slice,
                                        padded_second_ubatch_slice)
 
+
+    def pad_ubatch_slice_prefill(
+            self, ubatch_slices_prefill: UBatchSlices,
+            num_pad_tokens_list: list[int]):
+        for i in range(len(ubatch_slices_prefill)):
+            ubatch_slices_prefill[i].token_slice.stop += num_pad_tokens_list[i]
+
+
     def should_ubatch_with_num_tokens(self, should_ubatch: bool, orig_num_tokens_per_ubatch: int,
                                       padded_num_tokens_per_ubatch: int,
                       ) -> tuple[bool, Optional[torch.Tensor]]:
@@ -1799,17 +1811,25 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         (attn_metadata, logits_indices, spec_decode_metadata,
          num_scheduled_tokens_np, spec_decode_common_attn_metadata,
          max_query_len, ubatch_slices, num_pad_tokens,
-         num_tokens_after_padding) = self._prepare_inputs(scheduler_output)
+         num_tokens_after_padding, ubatch_slices_prefill, num_pad_tokens_list,
+         num_tokens_after_padding_prefill) = self._prepare_inputs(scheduler_output)
 
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         num_input_tokens = num_scheduled_tokens
         if ubatch_slices and num_pad_tokens > 0:
             num_input_tokens += num_pad_tokens
+            # NOTE(minosfuture): attn_metadata is already generated before this
             self.pad_out_ubatch_slice(ubatch_slices, num_input_tokens)
         elif ubatch_slices is None:
             num_pad, num_tokens_after_padding = self.get_padding(
                 num_input_tokens)
             num_input_tokens += num_pad
+
+        if ubatch_slices_prefill:
+            self.pad_ubatch_slice_prefill(ubatch_slices_prefill, num_pad_tokens_list)
+            num_input_tokens = num_scheduled_tokens + sum(num_pad_tokens_list)
+
+        logger.debug(f"dbg: {ubatch_slices_prefill=} vs. {ubatch_slices=}")
 
         if self.supports_mm_inputs:
             # Run the multimodal encoder if any.
@@ -1842,6 +1862,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             # While it is possible to use embeddings as input just like the
             # multimodal models, it is not desirable for performance since
             # then the embedding layer is not included in the CUDA graph.
+            #
+            # NOTE(minosfuture): does it require [num_scheduled_token:num_input_tokens] to be zero? probably not
             input_ids = self.input_ids.gpu[:num_input_tokens]
             inputs_embeds = None
             model_kwargs = self._init_model_kwargs(num_input_tokens)
@@ -1856,7 +1878,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             intermediate_tensors = self.sync_and_slice_intermediate_tensors(
                 num_input_tokens, intermediate_tensors, True)
 
-        if ubatch_slices is not None:
+        if ubatch_slices or ubatch_slices_prefill:
+            # NOTE(minosfuture): needs to use the after-padding input_token size for prefill
             num_input_tokens = num_input_tokens // 2
 
         uniform_decode = (max_query_len == self.uniform_decode_query_len) and (
@@ -1871,10 +1894,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         with set_forward_context(attn_metadata,
                                  self.vllm_config,
                                  num_tokens=num_input_tokens or 1,
-                                 num_tokens_across_dp=num_tokens_after_padding,
+                                 num_tokens_across_dp=num_tokens_after_padding_prefill,
                                  cudagraph_runtime_mode=cudagraph_runtime_mode,
                                  batch_descriptor=batch_descriptor,
-                                 ubatch_slices=ubatch_slices
+                                 ubatch_slices=ubatch_slices_prefill
                                  ), self.maybe_get_kv_connector_output(
                                      scheduler_output) as kv_connector_output:
 
