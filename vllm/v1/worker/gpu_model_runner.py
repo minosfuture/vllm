@@ -1825,9 +1825,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 num_input_tokens)
             num_input_tokens += num_pad
 
-            #if ubatch_slices_prefill:
-            #    self.pad_ubatch_slice_prefill(ubatch_slices_prefill, num_pad_tokens_list)
-            #    num_input_tokens = num_scheduled_tokens + sum(num_pad_tokens_list)
+        if ubatch_slices_prefill:
+            self.pad_ubatch_slice_prefill(ubatch_slices_prefill, num_pad_tokens_list)
+            num_input_tokens = num_scheduled_tokens + sum(num_pad_tokens_list)
 
         logger.debug(f"dbg: {ubatch_slices_prefill=} vs. {ubatch_slices=}")
 
