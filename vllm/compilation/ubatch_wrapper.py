@@ -259,11 +259,8 @@ class UBatchWrapper:
                 return self.cudagraph_wrapper(*args, **kwargs)
 
         attn_metadata = forward_context.attn_metadata
-        # NOTE(minosfuture): need to fix this for prefill ubatch
         num_tokens = (ubatch_slices[0].token_slice.stop -
                       ubatch_slices[0].token_slice.start) * 2
-            #(ubatch_slices[1].token_slice.stop
-            #    - ubatch_slices[1].token_slice.start)
         input_ids = kwargs['input_ids']
         positions = kwargs['positions']
         intermediate_tensors = kwargs['intermediate_tensors']

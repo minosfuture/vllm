@@ -700,6 +700,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         max_scheduled_tokens_ubatch = max(scheduled_tokens_ubatch) if scheduled_tokens_ubatch else 0
         # NOTE(minosfuture): whatever collective done here (e.g. dp_padding.*)
         # needs to be duplicated in _dummy_run, otherwise it would hang
+        logger.debug(f"dbg: _ubatch_split: first discussion")
         (should_ubatch, num_pad_tokens_list, num_tokens_after_padding_prefill) = \
             self.get_dp_padding_ubatch_prefill(max_scheduled_tokens_ubatch,
                                                scheduled_tokens_ubatch,
@@ -722,7 +723,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
 
         # Don't microbatch unless every other DP worker is also microbatching
-        logger.debug(f"dbg: waiting on next discussion")
+        logger.debug(f"dbg: _ubatch_split: second discussion")
         num_pad_tokens = 0
         num_tokens_after_padding = None
         (should_ubatch, num_pad_tokens,
@@ -750,7 +751,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             UbatchSlice(padded_second_ubatch_slice, padded_second_ubatch_slice)
         ]
 
-        logger.debug(f"dbg: {ubatch_slices_prefill=} vs. {ubatch_slices=}")
+        logger.debug(f"dbg: _ubatch_split: {ubatch_slices_prefill=} vs. {ubatch_slices=}")
 
         return (ubatch_slices, num_pad_tokens, num_tokens_after_padding,
                 ubatch_slices_prefill, num_pad_tokens_list.tolist(), num_tokens_after_padding_prefill)
@@ -1828,10 +1829,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         if ubatch_slices_prefill:
             self.pad_ubatch_slice_prefill(ubatch_slices_prefill, num_pad_tokens_list)
-            #num_input_tokens = num_scheduled_tokens + sum(num_pad_tokens_list)
+            num_input_tokens_prefill = num_scheduled_tokens + sum(num_pad_tokens_list)
+            logger.debug(f"dbg: execute_model: {num_input_tokens_prefill=} vs. {num_input_tokens=}")
 
-        logger.debug(f"dbg: {ubatch_slices_prefill=} vs. {ubatch_slices=}")
-        logger.debug(f"dbg: {num_tokens_after_padding_prefill=} vs. {num_tokens_after_padding=}")
+        logger.debug(f"dbg: execute_model: {ubatch_slices_prefill=} vs. {ubatch_slices=}")
+        logger.debug(f"dbg: execute_model: {num_tokens_after_padding_prefill=} vs. {num_tokens_after_padding=}")
 
         if self.supports_mm_inputs:
             # Run the multimodal encoder if any.
@@ -1903,7 +1905,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                  ), self.maybe_get_kv_connector_output(
                                      scheduler_output) as kv_connector_output:
 
-            logger.debug("dbg: start model forward")
+            logger.debug("dbg: execute_model: start model forward")
             model_output = self.model(
                 input_ids=input_ids,
                 positions=positions,
@@ -2575,20 +2577,19 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             is_profile: If True, this is a profile run.
             remove_lora: If False, dummy LoRAs are not destroyed after the run
         """
-        logger.debug(f"dbg: dummy_run")
         ubatch_enabled = self.parallel_config.enable_microbatching
         should_ubatch = False
         if ubatch_enabled:
             should_ubatch = num_tokens >= \
                 self.parallel_config.microbatching_token_threshold and \
                 allow_microbatching
-            logger.debug("first discussion for prefill check (will remove)")
+            logger.debug("dbg: dummy_run: first discussion for prefill check (will remove)")
             should_ubatch, _ = self.should_ubatch_with_num_tokens(
                 should_ubatch,
                 num_tokens // 2,
                 num_tokens // 2,
             )
-            logger.debug("second discussion for decode check")
+            logger.debug("dbg: dummy_run: second discussion for decode check")
             should_ubatch, _ = self.should_ubatch_with_num_tokens(
                 should_ubatch,
                 num_tokens // 2,
@@ -2773,6 +2774,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
             if ubatch_slices is not None:
                 num_tokens = num_tokens // 2
+            logger.debug("dbg: dummy_run: get context")
             with self.maybe_randomize_inputs(input_ids), set_forward_context(
                     attn_metadata,
                     self.vllm_config,
@@ -2781,6 +2783,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     cudagraph_runtime_mode=cudagraph_runtime_mode,
                     batch_descriptor=batch_descriptor,
                     ubatch_slices=ubatch_slices):
+                logger.debug("dbg: dummy_run: model forward")
                 outputs = self.model(
                     input_ids=input_ids,
                     positions=positions,
