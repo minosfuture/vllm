@@ -1733,7 +1733,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             self, ubatch_slices_prefill: UBatchSlices,
             num_pad_tokens_list: list[int]):
         for i in range(len(ubatch_slices_prefill)):
-            ubatch_slices_prefill[i].token_slice.stop += num_pad_tokens_list[i]
+            ubatch_slices_prefill[i].token_slice = slice(ubatch_slices_prefill[i].token_slice.start,
+                                                         ubatch_slices_prefill[i].token_slice.stop + num_pad_tokens_list[i])
 
 
     def should_ubatch_with_num_tokens(self, should_ubatch: bool, orig_num_tokens_per_ubatch: int,
