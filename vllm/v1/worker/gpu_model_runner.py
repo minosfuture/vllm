@@ -1825,6 +1825,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         elif ubatch_slices is None:
             num_pad, num_tokens_after_padding = self.get_padding(
                 num_input_tokens)
+            # NOTE(minosfuture): clean this up; very hacky
+            num_tokens_after_padding_prefill = num_tokens_after_padding
             num_input_tokens += num_pad
 
         if ubatch_slices_prefill:
@@ -1895,6 +1897,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         # Run the model.
         # Use persistent buffers for CUDA graphs.
+        logger.debug("dbg: execute_model: get context")
         with set_forward_context(attn_metadata,
                                  self.vllm_config,
                                  num_tokens=num_input_tokens or 1,
