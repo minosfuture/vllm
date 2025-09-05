@@ -259,10 +259,11 @@ class UBatchWrapper:
                 return self.cudagraph_wrapper(*args, **kwargs)
 
         attn_metadata = forward_context.attn_metadata
+        # NOTE(minosfuture): need to fix this for prefill ubatch
         num_tokens = (ubatch_slices[0].token_slice.stop -
-                      ubatch_slices[0].token_slice.start) + \
-            (ubatch_slices[1].token_slice.stop
-                - ubatch_slices[1].token_slice.start)
+                      ubatch_slices[0].token_slice.start) * 2
+            #(ubatch_slices[1].token_slice.stop
+            #    - ubatch_slices[1].token_slice.start)
         input_ids = kwargs['input_ids']
         positions = kwargs['positions']
         intermediate_tensors = kwargs['intermediate_tensors']
@@ -276,6 +277,7 @@ class UBatchWrapper:
 
         if num_tokens not in self.cudagraphs \
             and cudagraph_runtime_mode is CUDAGraphMode.FULL:
+            logger.debug(f"dbg: cuda graph capture")
             ubatch_metadata = self._make_ubatch_metadata(
                 ubatch_slices=ubatch_slices,
                 attn_metadata=attn_metadata,
@@ -290,6 +292,7 @@ class UBatchWrapper:
 
             return self._capture_ubatches(ubatch_metadata, self.model)
         elif num_tokens in self.cudagraphs:
+            logger.debug(f"dbg: cuda graph replay")
             cudagraph_metadata = self.cudagraphs[num_tokens]
             cudagraph_metadata.cudagraph.replay()
             return cudagraph_metadata.outputs

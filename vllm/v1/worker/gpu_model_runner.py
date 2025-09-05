@@ -1830,8 +1830,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             self.pad_ubatch_slice_prefill(ubatch_slices_prefill, num_pad_tokens_list)
             #num_input_tokens = num_scheduled_tokens + sum(num_pad_tokens_list)
 
-        logger.debug(f"dbg: {ubatch_slices_prefill=} vs. {ubatch_slices=}"
-                     f"{num_tokens_after_padding_prefill=} vs. {num_tokens_after_padding=}")
+        logger.debug(f"dbg: {ubatch_slices_prefill=} vs. {ubatch_slices=}")
+        logger.debug(f"dbg: {num_tokens_after_padding_prefill=} vs. {num_tokens_after_padding=}")
 
         if self.supports_mm_inputs:
             # Run the multimodal encoder if any.
@@ -1880,7 +1880,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             intermediate_tensors = self.sync_and_slice_intermediate_tensors(
                 num_input_tokens, intermediate_tensors, True)
 
-        if ubatch_slices: # or ubatch_slices_prefill:
+        if ubatch_slices:# or ubatch_slices_prefill:
             # NOTE(minosfuture): needs to use the after-padding input_token size for prefill
             num_input_tokens = num_input_tokens // 2
 
@@ -1896,13 +1896,14 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         with set_forward_context(attn_metadata,
                                  self.vllm_config,
                                  num_tokens=num_input_tokens or 1,
-                                 num_tokens_across_dp=num_tokens_after_padding, #num_tokens_after_padding_prefill,
+                                 num_tokens_across_dp=num_tokens_after_padding_prefill,
                                  cudagraph_runtime_mode=cudagraph_runtime_mode,
                                  batch_descriptor=batch_descriptor,
-                                 ubatch_slices=ubatch_slices, #ubatch_slices_prefill
+                                 ubatch_slices=ubatch_slices_prefill
                                  ), self.maybe_get_kv_connector_output(
                                      scheduler_output) as kv_connector_output:
 
+            logger.debug("dbg: start model forward")
             model_output = self.model(
                 input_ids=input_ids,
                 positions=positions,
