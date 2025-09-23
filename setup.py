@@ -322,7 +322,7 @@ class precompiled_wheel_utils:
                     "vllm/_C.abi3.so",
                     "vllm/_moe_C.abi3.so",
                     "vllm/_flashmla_C.abi3.so",
-                    "vllm/vllm_flash_attn/_vllm_fa2_C.abi3.so",
+                    #"vllm/vllm_flash_attn/_vllm_fa2_C.abi3.so",
                     "vllm/vllm_flash_attn/_vllm_fa3_C.abi3.so",
                     "vllm/cumem_allocator.abi3.so",
                 ]
@@ -573,26 +573,26 @@ def get_requirements() -> list[str]:
 
 ext_modules = []
 
-if _is_cuda() or _is_hip():
-    ext_modules.append(CMakeExtension(name="vllm._moe_C"))
+#if _is_cuda() or _is_hip():
+#    ext_modules.append(CMakeExtension(name="vllm._moe_C"))
 
-if _is_hip():
-    ext_modules.append(CMakeExtension(name="vllm._rocm_C"))
+#if _is_hip():
+#    ext_modules.append(CMakeExtension(name="vllm._rocm_C"))
 
 if _is_cuda():
-    ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa2_C"))
+    #ext_modules.append(CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa2_C"))
     if envs.VLLM_USE_PRECOMPILED or get_nvcc_cuda_version() >= Version("12.3"):
         # FA3 requires CUDA 12.3 or later
         ext_modules.append(
             CMakeExtension(name="vllm.vllm_flash_attn._vllm_fa3_C"))
         # Optional since this doesn't get built (produce an .so file) when
         # not targeting a hopper system
-        ext_modules.append(
-            CMakeExtension(name="vllm._flashmla_C", optional=True))
-    ext_modules.append(CMakeExtension(name="vllm.cumem_allocator"))
+        #ext_modules.append(
+        #    CMakeExtension(name="vllm._flashmla_C", optional=True))
+    #ext_modules.append(CMakeExtension(name="vllm.cumem_allocator"))
 
-if _build_custom_ops():
-    ext_modules.append(CMakeExtension(name="vllm._C"))
+#if _build_custom_ops():
+#    ext_modules.append(CMakeExtension(name="vllm._C"))
 
 package_data = {
     "vllm": [

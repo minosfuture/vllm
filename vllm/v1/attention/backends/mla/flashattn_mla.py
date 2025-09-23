@@ -101,6 +101,11 @@ class FlashAttnMLAMetadataBuilder(
     def _schedule_decode(self, num_reqs, cu_query_lens, max_query_len, seqlens,
                          max_seq_len, causal):
         if self.fa_aot_schedule:
+            print(
+                f"get_scheduler_metadata args: num_reqs={num_reqs}, "
+                f"max_query_len=max_seqlen_q={max_query_len}, max_seq_len=max_seqlen_k={max_seq_len}, "
+                f"cu_query_lens=cu_seqlens_q={cu_query_lens}, seqlens={seqlens}, num_splits={self.max_num_splits}, "
+            )
             return get_scheduler_metadata(
                 batch_size=num_reqs,
                 max_seqlen_q=max_query_len,
@@ -126,7 +131,8 @@ class FlashAttnMLAMetadataBuilder(
                       num_decode_tokens: int) -> FlashAttnMLADecodeMetadata:
         query_lens_cpu = (query_start_loc_cpu[1:] - query_start_loc_cpu[:-1])
         max_query_len = query_lens_cpu.max().item()
-        max_seq_len = seq_lens_cpu.max().item()
+        # seq_lens_cpu is not adjusted for dcp
+        max_seq_len = seq_lens_device.max().item()
 
         scheduler_metadata = self._schedule_decode(
             num_reqs=seq_lens_cpu.numel(),
@@ -135,6 +141,9 @@ class FlashAttnMLAMetadataBuilder(
             seqlens=seq_lens_device,
             max_seq_len=max_seq_len,
             causal=True,
+        )
+        print(
+            f"FlashAttnMLAMetadataBuilder: scheduler_metadata={scheduler_metadata}"
         )
 
         # For FA3 + full cudagraph
@@ -239,6 +248,29 @@ class FlashAttnMLAImpl(MLACommonImpl[FlashAttnMLAMetadata]):
         # kernel uses this to calculate grid dimensions. Ensure it's at least 1
         # to prevent invalid grid configuration during graph capture.
         max_seqlen_q = max(attn_metadata.decode.max_query_len, 1)
+
+        if self.dcp_rank == 0 and False:
+            logger.info(
+                f"flash_attn_varlen_func args: q.shape={q_pe.shape}, "
+                f"k.shape={k_pe_cache.unsqueeze(-2).shape}, "
+                f"v.shape={kv_c_cache.unsqueeze(-2).shape}, "
+                f"q_v.shape={q_nope.shape}, "
+                f"max_seqlen_q={max_seqlen_q}, "
+                f"cu_seqlens_q.shape={attn_metadata.decode.query_start_loc.shape}, "
+                f"cu_seqlens_q={attn_metadata.decode.query_start_loc}, "
+                f"max_seqlen_k={attn_metadata.decode.max_seq_len}, "
+                f"seqused_k.shape={attn_metadata.decode.seq_lens.shape}, "
+                f"seqused_k={attn_metadata.decode.seq_lens}, "
+                f"block_table.shape={attn_metadata.decode.block_table.shape}, "
+                f"softmax_scale={self.scale}, "
+                f"causal=True, "
+                f"return_softmax_lse={self.need_to_return_lse_for_decode}, "
+                f"fa_version=3, "
+                f"scheduler_metadata.shape={'None' if attn_metadata.decode.scheduler_metadata is None else attn_metadata.decode.scheduler_metadata.shape}, "
+                f"scheduler_metadata={'None' if attn_metadata.decode.scheduler_metadata is None else attn_metadata.decode.scheduler_metadata}, "
+                f"num_splits={attn_metadata.decode.max_num_splits}, "
+                f"cp_world_size={self.dcp_world_size}, "
+                f"cp_rank={self.dcp_rank}")
 
         attn_out = flash_attn_varlen_func(
             q=q_pe,

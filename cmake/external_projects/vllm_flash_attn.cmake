@@ -68,12 +68,12 @@ install(CODE "set(CMAKE_INSTALL_LOCAL_ONLY TRUE)" ALL_COMPONENTS)
 
 # Copy over the vllm-flash-attn python files (duplicated for fa2 and fa3, in
 # case only one is built, in the case both are built redundant work is done)
-install(
-  DIRECTORY ${vllm-flash-attn_SOURCE_DIR}/vllm_flash_attn/
-  DESTINATION vllm/vllm_flash_attn
-  COMPONENT _vllm_fa2_C
-  FILES_MATCHING PATTERN "*.py"
-)
+#install(
+#  DIRECTORY ${vllm-flash-attn_SOURCE_DIR}/vllm_flash_attn/
+#  DESTINATION vllm/vllm_flash_attn
+#  COMPONENT _vllm_fa2_C
+#  FILES_MATCHING PATTERN "*.py"
+#)
 
 install(
   DIRECTORY ${vllm-flash-attn_SOURCE_DIR}/vllm_flash_attn/

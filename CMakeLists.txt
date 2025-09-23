@@ -176,6 +176,13 @@ if(NVCC_THREADS AND VLLM_GPU_LANG STREQUAL "CUDA")
 endif()
 
 #
+# Add debug flags for CUDA compilation
+#
+if(VLLM_GPU_LANG STREQUAL "CUDA")
+  list(APPEND VLLM_GPU_FLAGS "-lineinfo")
+endif()
+
+#
 # Use FetchContent for C++ dependencies that are compiled as part of vLLM's build process.
 # setup.py will override FETCHCONTENT_BASE_DIR to play nicely with sccache.
 # Each dependency that produces build artifacts should override its BINARY_DIR to avoid

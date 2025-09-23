@@ -667,6 +667,7 @@ class MLACommonMetadataBuilder(AttentionMetadataBuilder[M]):
                                        decode_threshold=self.reorder_batch_threshold)
 
         # Note(hc): update seq_lens of decode reqs under DCP.
+        print(f"seq_lens before adjustment: {seq_lens[:num_decodes]=}")
         if self.dcp_world_size > 1:
             seq_lens[:num_decodes] = seq_lens[:num_decodes] \
                 // self.dcp_world_size + (self.dcp_rank <= \
