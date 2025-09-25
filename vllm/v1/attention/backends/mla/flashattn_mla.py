@@ -77,9 +77,9 @@ class FlashAttnMLAMetadataBuilder(
 
         self.use_full_cuda_graph = \
             self.compilation_config.cudagraph_mode.has_full_cudagraphs()
+        self.max_cudagraph_size = self.compilation_config.max_capture_size
 
         if self.use_full_cuda_graph and self.fa_aot_schedule:
-            self.max_cudagraph_size = self.compilation_config.max_capture_size
 
             if self.max_cudagraph_size > 992:
                 # This condition derives from FA3's internal heuristic.
@@ -99,16 +99,19 @@ class FlashAttnMLAMetadataBuilder(
             self.max_num_splits = _DEFAULT_MAX_NUM_SPLITS_FOR_CUDA_GRAPH
 
     def _schedule_decode(self, num_reqs, cu_query_lens, max_query_len, seqlens,
-                         max_seq_len, causal):
+                         max_seq_len, causal, max_num_splits):
         if self.fa_aot_schedule:
-            print(
-                f"get_scheduler_metadata args: num_reqs={num_reqs}, "
-                f"max_query_len=max_seqlen_q={max_query_len}, max_seq_len=max_seqlen_k={max_seq_len}, "
-                f"cu_query_lens=cu_seqlens_q={cu_query_lens}, seqlens={seqlens}, num_splits={self.max_num_splits}, "
-            )
+            if self.dcp_rank == 0 and self.dcp_world_size > 1:
+                logger.info(
+                    f"FlashAttnMLAMetadataBuilder: num_reqs={num_reqs}, "
+                    f"max_query_len={max_query_len}, max_seq_len={max_seq_len}, "
+                    f"cu_query_lens={cu_query_lens}, seqlens={seqlens}, "
+                    f"max_num_splits={max_num_splits}, "
+                )
             return get_scheduler_metadata(
                 batch_size=num_reqs,
                 max_seqlen_q=max_query_len,
+
                 max_seqlen_k=max_seq_len,
                 num_heads_q=self.num_heads,
                 num_heads_kv=1,
@@ -119,7 +122,7 @@ class FlashAttnMLAMetadataBuilder(
                 page_size=self.page_size,
                 cu_seqlens_q=cu_query_lens,
                 causal=causal,
-                num_splits=self.max_num_splits,
+                num_splits=max_num_splits,
             )
         return None
 
@@ -134,6 +137,15 @@ class FlashAttnMLAMetadataBuilder(
         # seq_lens_cpu is not adjusted for dcp
         max_seq_len = seq_lens_device.max().item()
 
+        max_num_splits = 0
+
+        if num_decode_tokens <= self.max_cudagraph_size:
+            # NOTE(woosuk): Setting num_splits > 1 may increase the memory
+            # usage, because the intermediate buffers of size [num_splits,
+            # num_heads, num_tokens, head_size] are allocated. Therefore,
+            # we only set num_splits when using cuda graphs.
+            max_num_splits = self.max_num_splits
+
         scheduler_metadata = self._schedule_decode(
             num_reqs=seq_lens_cpu.numel(),
             cu_query_lens=query_start_loc_device,
@@ -141,13 +153,14 @@ class FlashAttnMLAMetadataBuilder(
             seqlens=seq_lens_device,
             max_seq_len=max_seq_len,
             causal=True,
+            max_num_splits=max_num_splits,
         )
-        print(
-            f"FlashAttnMLAMetadataBuilder: scheduler_metadata={scheduler_metadata}"
-        )
+        if self.dcp_rank == 0 and self.dcp_world_size > 1:
+            logger.info(
+                f"FlashAttnMLAMetadataBuilder: scheduler_metadata={scheduler_metadata}"
+            )
 
         # For FA3 + full cudagraph
-        max_num_splits = 0
         if self.use_full_cuda_graph and scheduler_metadata is not None:
             n = scheduler_metadata.shape[0]
             # Ensure the persistent buffer is large enough
@@ -161,13 +174,6 @@ class FlashAttnMLAMetadataBuilder(
             # output buffer.
             self.scheduler_metadata[n:] = 0
             scheduler_metadata = self.scheduler_metadata[:n]
-
-            if num_decode_tokens <= self.max_cudagraph_size:
-                # NOTE(woosuk): Setting num_splits > 1 may increase the memory
-                # usage, because the intermediate buffers of size [num_splits,
-                # num_heads, num_tokens, head_size] are allocated. Therefore,
-                # we only set num_splits when using cuda graphs.
-                max_num_splits = self.max_num_splits
 
         return FlashAttnMLADecodeMetadata(
             block_table=block_table_tensor,
@@ -249,7 +255,7 @@ class FlashAttnMLAImpl(MLACommonImpl[FlashAttnMLAMetadata]):
         # to prevent invalid grid configuration during graph capture.
         max_seqlen_q = max(attn_metadata.decode.max_query_len, 1)
 
-        if self.dcp_rank == 0 and False:
+        if self.dcp_world_size and self.dcp_world_size > 1 and self.dcp_rank == 0:
             logger.info(
                 f"flash_attn_varlen_func args: q.shape={q_pe.shape}, "
                 f"k.shape={k_pe_cache.unsqueeze(-2).shape}, "
@@ -286,7 +292,7 @@ class FlashAttnMLAImpl(MLACommonImpl[FlashAttnMLAMetadata]):
             causal=True,
             return_softmax_lse=self.need_to_return_lse_for_decode,
             fa_version=3,  # only version 3 is supported
-            scheduler_metadata=attn_metadata.decode.scheduler_metadata,
+            scheduler_metadata=None, #attn_metadata.decode.scheduler_metadata,
             num_splits=attn_metadata.decode.max_num_splits,
             cp_world_size=self.dcp_world_size,
             cp_rank=self.dcp_rank,
