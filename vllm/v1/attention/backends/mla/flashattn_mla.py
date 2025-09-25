@@ -111,9 +111,8 @@ class FlashAttnMLAMetadataBuilder(
             return get_scheduler_metadata(
                 batch_size=num_reqs,
                 max_seqlen_q=max_query_len,
-
                 max_seqlen_k=max_seq_len,
-                num_heads_q=self.num_heads,
+                num_heads_q=self.num_heads * self.dcp_world_size,
                 num_heads_kv=1,
                 headdim=self.mla_dims.qk_rope_head_dim,
                 cache_seqlens=seqlens,
@@ -123,6 +122,8 @@ class FlashAttnMLAMetadataBuilder(
                 cu_seqlens_q=cu_query_lens,
                 causal=causal,
                 num_splits=max_num_splits,
+                cp_world_size=self.dcp_world_size,
+                cp_rank=self.dcp_rank,
             )
         return None
 
@@ -208,6 +209,7 @@ class FlashAttnMLAImpl(MLACommonImpl[FlashAttnMLAMetadata]):
                          logits_soft_cap, attn_type,
                          kv_sharing_target_layer_name, **mla_args)
 
+        logger.info(f"FlashAttnMLAImpl: {num_heads=}")
         assert flash_attn_supports_mla(), \
             "FlashAttnMLA is not supported on this device"
 
@@ -292,7 +294,7 @@ class FlashAttnMLAImpl(MLACommonImpl[FlashAttnMLAMetadata]):
             causal=True,
             return_softmax_lse=self.need_to_return_lse_for_decode,
             fa_version=3,  # only version 3 is supported
-            scheduler_metadata=None, #attn_metadata.decode.scheduler_metadata,
+            scheduler_metadata=attn_metadata.decode.scheduler_metadata,
             num_splits=attn_metadata.decode.max_num_splits,
             cp_world_size=self.dcp_world_size,
             cp_rank=self.dcp_rank,
