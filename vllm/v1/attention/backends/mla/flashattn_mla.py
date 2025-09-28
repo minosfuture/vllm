@@ -98,6 +98,12 @@ class FlashAttnMLAMetadataBuilder(
             # pre-allocated during capture.
             self.max_num_splits = _DEFAULT_MAX_NUM_SPLITS_FOR_CUDA_GRAPH
 
+        # TODO(lucas): Until we add support for the DCP custom masking we need
+        #   to restrict decodes to q_len == 1 when DCP is enabled.
+        #   2 for deepseek_mtp
+            #self.reorder_batch_threshold = 16 * 2 - 1\
+            #    if self.dcp_world_size > 1 else self.reorder_batch_threshold
+
     def _schedule_decode(self, num_reqs, cu_query_lens, max_query_len, seqlens,
                          max_seq_len, causal):
         if self.fa_aot_schedule:
@@ -126,7 +132,7 @@ class FlashAttnMLAMetadataBuilder(
                       num_decode_tokens: int) -> FlashAttnMLADecodeMetadata:
         query_lens_cpu = (query_start_loc_cpu[1:] - query_start_loc_cpu[:-1])
         max_query_len = query_lens_cpu.max().item()
-        max_seq_len = seq_lens_cpu.max().item()
+        max_seq_len = seq_lens_device.max().item()
 
         scheduler_metadata = self._schedule_decode(
             num_reqs=seq_lens_cpu.numel(),
@@ -160,6 +166,15 @@ class FlashAttnMLAMetadataBuilder(
                 # we only set num_splits when using cuda graphs.
                 max_num_splits = self.max_num_splits
 
+        if self.dcp_rank == 0 or self.dcp_rank == 7:
+            logger.info(f"_build_decode: {seq_lens_device=}, {query_start_loc_cpu=}, {max_query_len=}, {max_seq_len=}")
+            import traceback
+            if max_query_len == 154 and max_seq_len == 116:
+                logger.info("seq len 116: ")
+                traceback.print_stack()
+            if max_query_len == 154 and max_seq_len == 15:
+                logger.info("seq len 15: ")
+                traceback.print_stack()
         return FlashAttnMLADecodeMetadata(
             block_table=block_table_tensor,
             seq_lens=seq_lens_device,

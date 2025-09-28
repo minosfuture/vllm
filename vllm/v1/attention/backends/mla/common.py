@@ -662,13 +662,18 @@ class MLACommonMetadataBuilder(AttentionMetadataBuilder[M]):
         num_computed_tokens_cpu = (common_attn_metadata.seq_lens_cpu -
                                    query_seq_lens_cpu)
 
+        c = common_attn_metadata
+        if self.dcp_rank == 0 or self.dcp_rank == 7:
+            logger.info(f"build: {c.query_start_loc_cpu=}, {c.seq_lens_cpu=}, "
+                        f"{c.num_computed_tokens_cpu=}, {c.max_query_len=}, {c.max_seq_len=}, "
+                        f"before dcp handling {seq_lens=}")
         num_decodes, num_prefills, num_decode_tokens, num_prefill_tokens = \
             split_decodes_and_prefills(common_attn_metadata,
                                        decode_threshold=self.reorder_batch_threshold)
 
         # Note(hc): update seq_lens of decode reqs under DCP.
         if self.dcp_world_size > 1:
-            seq_lens[:num_decodes] = seq_lens[:num_decodes] \
+            cp_seq_lens = seq_lens[:num_decodes] \
                 // self.dcp_world_size + (self.dcp_rank <= \
                 (seq_lens[:num_decodes] - 1) % self.dcp_world_size)
 
@@ -735,6 +740,8 @@ class MLACommonMetadataBuilder(AttentionMetadataBuilder[M]):
                              dim=1,
                              out=cu_seq_lens_cpu[:, 1:],
                              dtype=torch.int32)
+                if self.dcp_rank == 0 or self.dcp_rank == 7:
+                    logger.info(f"{chunk_starts=}, {chunk_ends=}, {chunk_seq_lens=}, {cu_seq_lens_cpu=}")
 
                 if self.dcp_world_size > 1:
                     # Note(hc): The above max_context_chunk already enforces
@@ -763,6 +770,8 @@ class MLACommonMetadataBuilder(AttentionMetadataBuilder[M]):
                                  dim=1,
                                  out=cp_cu_seq_lens_cpu[:, 1:],
                                  dtype=torch.int32)
+                    if self.dcp_rank == 0 or self.dcp_rank == 7:
+                        logger.info(f"{cp_chunk_starts=}, {cp_chunk_ends=}, {cp_chunk_seq_lens=}, {cp_cu_seq_lens_cpu=}")
 
                 chunked_context_metadata_cls = \
                     CudnnPrefillMetadata.ChunkedContextMetadata \
@@ -809,6 +818,8 @@ class MLACommonMetadataBuilder(AttentionMetadataBuilder[M]):
                 max_query_len=max_query_len,
                 chunked_context=chunked_context_metadata,
             )
+            if self.dcp_rank == 0 or self.dcp_rank == 7:
+                logger.info(f"build: {prefill_query_start_loc=}, {max_query_len=}, {chunked_context_metadata=}")
 
             if self._use_cudnn_prefill:
                 assert isinstance(prefill_metadata, CudnnPrefillMetadata)
@@ -821,7 +832,7 @@ class MLACommonMetadataBuilder(AttentionMetadataBuilder[M]):
             decode_metadata = self._build_decode(
                 block_table_tensor=block_table_tensor[:num_decodes, ...],
                 seq_lens_cpu=seq_lens_cpu[:num_decodes],
-                seq_lens_device=seq_lens[:num_decodes],
+                seq_lens_device=cp_seq_lens[:num_decodes] if self.dcp_world_size > 1 else seq_lens[:num_decodes],
                 query_start_loc_cpu=query_start_loc_cpu[:num_decodes + 1],
                 query_start_loc_device=query_start_loc[:num_decodes + 1],
                 num_decode_tokens=num_decode_tokens,

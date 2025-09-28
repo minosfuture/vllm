@@ -1083,6 +1083,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 encoder_seq_lens=encoder_seq_lens,
             )
 
+            logger.info(f"{kv_cache_group_id=}, {max_seq_len=}, {seq_lens=}, {num_computed_tokens_cpu=}")
             if self.speculative_config and \
                 spec_decode_common_attn_metadata is None:
                 spec_decode_common_attn_metadata = common_attn_metadata
@@ -2363,6 +2364,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 ]
                 num_rejected_tokens_cpu = torch.tensor(num_rejected_tokens,
                                                        dtype=torch.int32)
+                c = common_attn_metadata
+                logger.info(f"before drafter prepare inputs: {c.query_start_loc_cpu=}, {c.seq_lens_cpu=}, "
+                            f"{c.num_computed_tokens_cpu=}, {c.max_query_len=}, {c.max_seq_len=}, ")
                 common_attn_metadata, token_indices =\
                     self.drafter.prepare_inputs(
                     common_attn_metadata, num_rejected_tokens_cpu)
@@ -2380,6 +2384,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 mm_embeds = self._gather_mm_embeddings(scheduler_output,
                                                        shift_computed_tokens=1)
 
+            c = common_attn_metadata
+            logger.info(f"after drafter prepare inputs: {c.query_start_loc_cpu=}, {c.seq_lens_cpu=}, "
+                        f"{c.num_computed_tokens_cpu=}, {c.max_query_len=}, {c.max_seq_len=}, ")
             draft_token_ids = self.drafter.propose(
                 target_token_ids=target_token_ids,
                 target_positions=target_positions,

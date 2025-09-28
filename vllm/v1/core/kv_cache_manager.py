@@ -180,6 +180,7 @@ class KVCacheManager:
         computed_blocks, num_new_computed_tokens = (
             self.coordinator.find_longest_cache_hit(request.block_hashes,
                                                     max_cache_hit_length))
+        logger.info(f"{computed_blocks=}, {num_new_computed_tokens=}")
 
         if self.log_stats:
             assert self.prefix_cache_stats is not None

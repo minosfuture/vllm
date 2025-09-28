@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 
 from vllm.utils import cdiv
+from vllm.logger import init_logger
 from vllm.v1.core.block_pool import BlockPool
 from vllm.v1.core.kv_cache_utils import BlockHash, KVCacheBlock
 from vllm.v1.kv_cache_interface import (ChunkedLocalAttentionSpec,
@@ -13,6 +14,7 @@ from vllm.v1.kv_cache_interface import (ChunkedLocalAttentionSpec,
                                         SlidingWindowSpec)
 from vllm.v1.request import Request
 
+logger = init_logger(__name__)
 
 class SingleTypeKVCacheManager(ABC):
     """
@@ -269,6 +271,7 @@ class FullAttentionManager(SingleTypeKVCacheManager):
         if dcp_world_size > 1:
             block_size *= dcp_world_size
         max_num_blocks = max_length // block_size
+        logger.info(f"{max_length=}, {block_size=}, {max_num_blocks=}")
         for block_hash in itertools.islice(block_hashes, max_num_blocks):
             # block_hashes is a chain of block hashes. If a block hash is not
             # in the cached_block_hash_to_id, the following block hashes are
@@ -279,9 +282,20 @@ class FullAttentionManager(SingleTypeKVCacheManager):
                     computed.append(cached)
             else:
                 break
-        if use_eagle and computed_blocks[0]:
+        #if use_eagle and computed_blocks[0]:
+        #if computed_blocks[0]:
+        #    for computed in computed_blocks:
+        #        for i in range(128 // block_size):
+        #            if len(computed) > 2:
+        #                computed.pop()
+        #        logger.info(f"pop 8, {len(computed)}")
+        #if use_eagle and computed_blocks[0]:
+        if computed_blocks[0]:
             for computed in computed_blocks:
+                # check if remaining token count is less than one block
+                #if len(computed) * block_size + kv_cache_spec.block_size > max_length + 1:
                 computed.pop()
+                logger.info(f"pop one, {len(computed)}")
         return computed_blocks
 
     def remove_skipped_blocks(self, request_id: str,
