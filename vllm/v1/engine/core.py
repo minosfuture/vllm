@@ -606,9 +606,14 @@ class EngineCoreProc(EngineCore):
 
             self._init_data_parallel(vllm_config)
 
-            super().__init__(
-                vllm_config, executor_class, log_stats, executor_fail_callback
-            )
+            # Set vllm_config context before EngineCore initialization
+            # so that models can access the config during __init__
+            from vllm.config import set_current_vllm_config
+
+            with set_current_vllm_config(vllm_config):
+                super().__init__(
+                    vllm_config, executor_class, log_stats, executor_fail_callback
+                )
 
             # Background Threads and Queues for IO. These enable us to
             # overlap ZMQ socket IO with GPU since they release the GIL,
@@ -1121,15 +1126,18 @@ class DPEngineCoreProc(EngineCoreProc):
 
         # Initialize the engine.
         dp_rank = vllm_config.parallel_config.data_parallel_rank
-        super().__init__(
-            vllm_config,
-            local_client,
-            handshake_address,
-            executor_class,
-            log_stats,
-            client_handshake_address,
-            dp_rank,
-        )
+        from vllm.config import set_current_vllm_config
+
+        with set_current_vllm_config(vllm_config):
+            super().__init__(
+                vllm_config,
+                local_client,
+                handshake_address,
+                executor_class,
+                log_stats,
+                client_handshake_address,
+                dp_rank,
+            )
 
     def _init_data_parallel(self, vllm_config: VllmConfig):
         # Configure GPUs and stateless process group for data parallel.

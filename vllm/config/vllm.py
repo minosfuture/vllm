@@ -9,6 +9,7 @@ import os
 import tempfile
 import threading
 import time
+import traceback
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
@@ -1153,6 +1154,7 @@ def get_current_vllm_config() -> VllmConfig:
         # we don't set the vllm config. In that case, we set a default
         # config.
         logger.warning("Current vLLM config is not set.")
+        traceback.print_stack()
         return VllmConfig()
     return _current_vllm_config
 

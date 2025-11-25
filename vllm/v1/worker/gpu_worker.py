@@ -13,7 +13,7 @@ import torch.distributed
 import torch.nn as nn
 
 import vllm.envs as envs
-from vllm.config import VllmConfig
+from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.distributed import (
     ensure_model_parallel_initialized,
     init_distributed_environment,
@@ -531,44 +531,45 @@ class Worker(WorkerBase):
     def execute_model(
         self, scheduler_output: "SchedulerOutput"
     ) -> ModelRunnerOutput | None:
-        intermediate_tensors = None
-        forward_pass = scheduler_output.total_num_scheduled_tokens > 0
-        num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
-        num_input_tokens = self.model_runner._get_num_input_tokens(num_scheduled_tokens)
-        all_gather_tensors = {
-            "residual": not is_residual_scattered_for_sp(
-                self.vllm_config, num_input_tokens
+        with set_current_vllm_config(self.vllm_config):
+            intermediate_tensors = None
+            forward_pass = scheduler_output.total_num_scheduled_tokens > 0
+            num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
+            num_input_tokens = self.model_runner._get_num_input_tokens(num_scheduled_tokens)
+            all_gather_tensors = {
+                "residual": not is_residual_scattered_for_sp(
+                    self.vllm_config, num_input_tokens
+                )
+            }
+            if forward_pass and not get_pp_group().is_first_rank:
+                tensor_dict = get_pp_group().recv_tensor_dict(
+                    all_gather_group=get_tp_group(),
+                    all_gather_tensors=all_gather_tensors,
+                )
+                assert tensor_dict is not None
+                intermediate_tensors = IntermediateTensors(tensor_dict)
+
+            with self.annotate_profile(scheduler_output):
+                output = self.model_runner.execute_model(
+                    scheduler_output, intermediate_tensors
+                )
+                if isinstance(output, (ModelRunnerOutput, NoneType)):
+                    return output
+
+            assert isinstance(output, IntermediateTensors)
+            parallel_config = self.vllm_config.parallel_config
+            assert (
+                parallel_config.distributed_executor_backend != "external_launcher"
+                and not get_pp_group().is_last_rank
             )
-        }
-        if forward_pass and not get_pp_group().is_first_rank:
-            tensor_dict = get_pp_group().recv_tensor_dict(
+
+            get_pp_group().send_tensor_dict(
+                output.tensors,
                 all_gather_group=get_tp_group(),
                 all_gather_tensors=all_gather_tensors,
             )
-            assert tensor_dict is not None
-            intermediate_tensors = IntermediateTensors(tensor_dict)
 
-        with self.annotate_profile(scheduler_output):
-            output = self.model_runner.execute_model(
-                scheduler_output, intermediate_tensors
-            )
-            if isinstance(output, (ModelRunnerOutput, NoneType)):
-                return output
-
-        assert isinstance(output, IntermediateTensors)
-        parallel_config = self.vllm_config.parallel_config
-        assert (
-            parallel_config.distributed_executor_backend != "external_launcher"
-            and not get_pp_group().is_last_rank
-        )
-
-        get_pp_group().send_tensor_dict(
-            output.tensors,
-            all_gather_group=get_tp_group(),
-            all_gather_tensors=all_gather_tensors,
-        )
-
-        return None
+            return None
 
     def take_draft_token_ids(self) -> DraftTokenIds | None:
         return self.model_runner.take_draft_token_ids()
@@ -582,12 +583,13 @@ class Worker(WorkerBase):
             self.profiler.stop()
 
     def execute_dummy_batch(self) -> None:
-        if self.use_v2_model_runner:
-            self.model_runner.execute_model(
-                SchedulerOutput.make_empty(), dummy_run=True
-            )
-        else:
-            self.model_runner._dummy_run(1, uniform_decode=True)
+        with set_current_vllm_config(self.vllm_config):
+            if self.use_v2_model_runner:
+                self.model_runner.execute_model(
+                    SchedulerOutput.make_empty(), dummy_run=True
+                )
+            else:
+                self.model_runner._dummy_run(1, uniform_decode=True)
 
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_runner.add_lora(lora_request)
