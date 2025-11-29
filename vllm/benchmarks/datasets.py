@@ -1841,6 +1841,7 @@ def get_samples(args, tokenizer) -> list[SampleRequest]:
             "random": lambda: RandomDataset(
                 random_seed=args.seed,
                 dataset_path=args.dataset_path,
+                prefix_len=args.common_prefix_len,
                 disable_shuffle=args.disable_shuffle,
             ).sample(
                 tokenizer=tokenizer,

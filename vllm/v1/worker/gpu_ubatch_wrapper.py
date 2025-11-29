@@ -270,6 +270,7 @@ class UBatchWrapper:
         # after both threads have finished
         with override_forward_context(None):
             ubatch_threads = []
+            logger.info(f"running ubatch with {len(ubatch_metadata)} threads")
             for metadata in ubatch_metadata:
                 thread = threading.Thread(
                     target=_ubatch_thread,
@@ -398,8 +399,10 @@ class UBatchWrapper:
                     cudagraph_runtime_mode = CUDAGraphMode.NONE
 
             if cudagraph_runtime_mode in (CUDAGraphMode.NONE, CUDAGraphMode.PIECEWISE):
+                logger.info("no ubatch: either no cudagraph or piecewise")
                 return self.runnable(*args, **kwargs)
             else:
+                logger.info("no ubatch: run cudagraph")
                 assert self.cudagraph_wrapper is not None
                 return self.cudagraph_wrapper(*args, **kwargs)
 
@@ -434,6 +437,7 @@ class UBatchWrapper:
             num_tokens not in self.cudagraphs
             and cudagraph_runtime_mode is CUDAGraphMode.FULL
         ):
+            logger.info(f"_capture_ubatches")
             ubatch_metadata = self._make_ubatch_metadata(
                 ubatch_slices=ubatch_slices,
                 attn_metadata=attn_metadata,
@@ -452,6 +456,7 @@ class UBatchWrapper:
             num_tokens in self.cudagraphs
             and cudagraph_runtime_mode is CUDAGraphMode.FULL
         ):
+            logger.info(f"cudagraph.replay")
             cudagraph_metadata = self.cudagraphs[num_tokens]
             cudagraph_metadata.cudagraph.replay()
             return cudagraph_metadata.outputs
@@ -468,5 +473,6 @@ class UBatchWrapper:
                 batch_descriptor=batch_descriptor,
                 cudagraph_runtime_mode=CUDAGraphMode.NONE,
             )
+            logger.info(f"_run_ubatches")
             with self.sm_control:
                 return self._run_ubatches(ubatch_metadata, self.model)

@@ -1187,6 +1187,12 @@ def add_cli_args(parser: argparse.ArgumentParser):
         help="Top-k sampling parameter. Only has effect on openai-compatible backends.",
     )
     sampling_group.add_argument(
+        "--common-prefix-len",
+        type=int,
+        default=None,
+        help="common prefix length",
+    )
+    sampling_group.add_argument(
         "--min-p",
         type=float,
         default=None,

@@ -764,7 +764,7 @@ class FusedMoEModularKernel(torch.nn.Module):
             1,
             (
                 M
-                if not self.fused_experts.supports_chunking()
+                if not self.fused_experts.enable_chunking()
                 else min(M, envs.VLLM_FUSED_MOE_CHUNK_SIZE)
             ),
         )

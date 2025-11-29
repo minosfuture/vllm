@@ -865,6 +865,7 @@ class FusedMoE(CustomOp):
                 <= envs.VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD
             )
         )
+        logger.debug_once(f"{use_shared_experts_stream=}, {use_chunked_impl=}, {(self.shared_experts_stream is not None)=}, {hidden_states.shape[0]=}, {envs.VLLM_SHARED_EXPERTS_STREAM_TOKEN_THRESHOLD}")
 
         hidden_states_clone: torch.Tensor | None = None
         if use_shared_experts_stream:
@@ -872,7 +873,7 @@ class FusedMoE(CustomOp):
 
             # Clone BEFORE switching streams to avoid race condition
             # where routed_expert kernel may mutate hidden_states.
-            hidden_states_clone = hidden_states.clone()
+            hidden_states_clone = hidden_states #.clone()
 
             # Record that the clone will be used by shared_experts_stream
             # to avoid gc issue from deallocation of hidden_states_clone
@@ -1896,6 +1897,7 @@ class FusedMoE(CustomOp):
             not isinstance(self.quant_method, FusedMoEModularMethod)
             and self.shared_experts is not None
         )
+        logger.debug_once(f"{isinstance(self.quant_method, FusedMoEModularMethod)=}")
 
         use_chunked_impl = self.use_dp_chunking
 
@@ -1935,6 +1937,7 @@ class FusedMoE(CustomOp):
                 )
             # Run shared experts before matrix multiply.
             # because matrix multiply maybe modify the hidden_states.
+            logger.debug_once(f"{has_separate_shared_experts=}")
             if has_separate_shared_experts and not use_shared_experts_stream:
                 assert self.shared_experts is not None
                 shared_output = self.shared_experts(hidden_states)
@@ -1981,9 +1984,11 @@ class FusedMoE(CustomOp):
             )
 
             if has_separate_shared_experts:
+                logger.debug_once("has_separate_shared_experts")
                 assert self.shared_experts is not None
 
                 if use_shared_experts_stream:
+                    logger.debug_once("run shared expert on its own stream")
                     # Run shared experts in parallel on a separate stream
                     # NOTE: We start the separate stream here and mark the
                     # sync end point immediately after it is done. This is

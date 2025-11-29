@@ -1813,7 +1813,17 @@ class MLACommonImpl(MLACommonBaseImpl[M], Generic[M]):
         )
         k_nope, v = kv_nope.split([self.qk_nope_head_dim, self.v_head_dim], dim=-1)
 
-        k = torch.cat((k_nope, k_pe.expand((*k_nope.shape[:-1], -1))), dim=-1)
+        #k = torch.cat((k_nope, k_pe.expand((*k_nope.shape[:-1], -1))), dim=-1)
+        # Optimized: pre-allocate and copy instead of expand+cat
+        # This avoids the slow concatenation of non-contiguous expanded tensor
+        k = torch.empty(
+            (*k_nope.shape[:-1], k_nope.shape[-1] + k_pe.shape[-1]),
+            dtype=k_nope.dtype,
+            device=k_nope.device,
+        )
+        k[..., : k_nope.shape[-1]] = k_nope
+        k[..., k_nope.shape[-1] :] = k_pe
+        logger.info_once(f"{k.shape=}, {k_nope.shape=}, {k_pe.shape=}")
 
         output = self._run_prefill_new_tokens(
             prefill=attn_metadata.prefill,
