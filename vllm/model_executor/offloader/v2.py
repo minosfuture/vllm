@@ -11,6 +11,7 @@ from torch.func import functional_call
 
 from vllm.logger import init_logger
 from vllm.model_executor.offloader.base import BaseOffloader
+from vllm.model_executor.parameter import ModelWeightParameter
 from vllm.utils.platform_utils import is_pin_memory_available
 
 logger = init_logger(__name__)
@@ -209,7 +210,7 @@ class _ModuleOffloader:
         }
 
     def post_init(self):
-        """Initialize all parameter offloaders."""
+        """Collect total offloaded bytes (offloading already done in __init__)."""
         for param_offloader in self._param_offloaders.values():
             param_offloader.post_init()
             self.offloaded_bytes += param_offloader.offloaded_bytes
@@ -240,7 +241,7 @@ class _ModuleOffloader:
             "Tensors not loaded (call start_onload first)"
         )
         # Wait for loading event to complete
-        if self._load_event:
+        if self._load_event is not None:
             self._load_event.wait()
         return self._device_tensors
 
@@ -283,8 +284,11 @@ class _CpuParamOffloader(_BaseParamOffloader):
         super().__init__(module, param_name)
         self.cpu_data: torch.Tensor | None = None
 
-    def post_init(self):
-        """Move parameter to pinned CPU memory."""
+        # Offload immediately to free GPU memory
+        self._offload_to_cpu()
+
+    def _offload_to_cpu(self):
+        """Move parameter to pinned CPU memory and replace with meta tensor."""
         param = self._param
         pin_memory = is_pin_memory_available()
 
@@ -309,23 +313,32 @@ class _CpuParamOffloader(_BaseParamOffloader):
         )
 
         # Move parameter to meta device to free GPU memory
-        param.data = param.data.to("meta")
+        # Create new parameter with meta tensor and replace the old one
+        old_param_type = type(param)
+        meta_data = param.data.to("meta")
+
+        if old_param_type == ModelWeightParameter:
+            # ModelWeightParameter needs input_dim, output_dim, and weight_loader
+            new_param = ModelWeightParameter(
+                data=meta_data,
+                input_dim=param.input_dim,
+                output_dim=param.output_dim,
+                weight_loader=param.weight_loader,
+            )
+        elif old_param_type == nn.Parameter:
+            new_param = nn.Parameter(meta_data, requires_grad=False)
+        else:
+            raise ValueError(
+                f"Unknown parameter type: {old_param_type} for {self._param_name}"
+            )
+
+        setattr(self._module, self._param_name, new_param)
+
+    def post_init(self):
+        """No-op: offloading already done in __init__."""
+        pass
 
     def create_device_tensor(self) -> torch.Tensor:
         """Load from CPU to GPU (async if pinned)."""
         assert self.cpu_data is not None, "CPU data not initialized"
         return self.cpu_data.to("cuda", non_blocking=True)
-
-
-def _empty_strided_like(
-    x: torch.Tensor, device: str, pin_memory: bool = False
-) -> torch.Tensor:
-    """Helper to create empty tensor with same shape/stride as x."""
-    return torch.empty_strided(
-        size=x.size(),
-        stride=x.stride(),
-        dtype=x.dtype,
-        layout=x.layout,
-        device=device,
-        pin_memory=pin_memory,
-    )
