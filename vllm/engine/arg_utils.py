@@ -927,6 +927,15 @@ class EngineArgs:
         )
         cache_group.add_argument("--cpu-offload-gb", **cache_kwargs["cpu_offload_gb"])
         cache_group.add_argument(
+            "--offload-group-size", **cache_kwargs["offload_group_size"]
+        )
+        cache_group.add_argument(
+            "--offload-num-in-group", **cache_kwargs["offload_num_in_group"]
+        )
+        cache_group.add_argument(
+            "--offload-prefetch-step", **cache_kwargs["offload_prefetch_step"]
+        )
+        cache_group.add_argument(
             "--calculate-kv-scales", **cache_kwargs["calculate_kv_scales"]
         )
         cache_group.add_argument(
