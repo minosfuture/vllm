@@ -742,7 +742,7 @@ class FusedMoE(CustomOp):
         return (
             self.moe_parallel_config.use_pplx_kernels
             or self.moe_parallel_config.use_deepep_ll_kernels
-            or (self.dp_size > 1 and self.use_flashinfer_cutlass_kernels)
+            #or (self.dp_size > 1 and self.use_flashinfer_cutlass_kernels)
         )
 
     @property
