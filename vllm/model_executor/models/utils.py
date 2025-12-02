@@ -662,10 +662,15 @@ def make_layers(
         num_hidden_layers, get_pp_group().rank_in_group, get_pp_group().world_size
     )
 
+    logger.debug(f"{offloader_kwargs=}")
+
     modules = torch.nn.ModuleList(
         [PPMissingLayer() for _ in range(start_layer)]
         + get_offloader().wrap_modules(
-            (layer_fn(prefix=f"{prefix}.{idx}") for idx in range(start_layer, end_layer)),
+            (
+                layer_fn(prefix=f"{prefix}.{idx}")
+                for idx in range(start_layer, end_layer)
+            ),
             **(offloader_kwargs or {}),
         )
         + [PPMissingLayer() for _ in range(end_layer, num_hidden_layers)]

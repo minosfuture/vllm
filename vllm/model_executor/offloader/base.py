@@ -3,13 +3,17 @@
 """Base classes for model parameter offloading."""
 
 from abc import ABC, abstractmethod
-from typing import Callable, Generator, List, Optional
+from collections.abc import Callable, Generator
 
 import torch.nn as nn
 
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
 # Type aliases for clarity
 _SubmoduleAccessor = Callable[[nn.Module], nn.Module]
-_WhitelistParamNamesCreator = Callable[[nn.Module], List[str]]
+_WhitelistParamNamesCreator = Callable[[nn.Module], list[str]]
 
 
 class BaseOffloader(ABC):
@@ -23,9 +27,9 @@ class BaseOffloader(ABC):
     def wrap_modules(
         self,
         modules_generator: Generator[nn.Module, None, None],
-        submodule_accessor: Optional[_SubmoduleAccessor] = None,
-        whitelist_param_names_creator: Optional[_WhitelistParamNamesCreator] = None,
-    ) -> List[nn.Module]:
+        submodule_accessor: _SubmoduleAccessor | None = None,
+        whitelist_param_names_creator: _WhitelistParamNamesCreator | None = None,
+    ) -> list[nn.Module]:
         """Wrap modules with offloading logic.
 
         Args:
@@ -66,20 +70,21 @@ class NoopOffloader(BaseOffloader):
     def wrap_modules(
         self,
         modules_generator: Generator[nn.Module, None, None],
-        submodule_accessor: Optional[_SubmoduleAccessor] = None,
-        whitelist_param_names_creator: Optional[_WhitelistParamNamesCreator] = None,
-    ) -> List[nn.Module]:
+        submodule_accessor: _SubmoduleAccessor | None = None,
+        whitelist_param_names_creator: _WhitelistParamNamesCreator | None = None,
+    ) -> list[nn.Module]:
         """Return modules unchanged."""
         return list(modules_generator)
 
 
 # Global singleton offloader instance
-_instance: Optional[BaseOffloader] = NoopOffloader()
+_instance: BaseOffloader | None = NoopOffloader()
 
 
 def get_offloader() -> BaseOffloader:
     """Get the global offloader instance."""
     assert _instance is not None, "Offloader instance is None"
+    logger.debug(f"{_instance=}")
     return _instance
 
 

@@ -273,15 +273,14 @@ class GPUModelRunner(
         self.observability_config = vllm_config.observability_config
 
         # Set up offloader based on configuration
+        # For backward compatibility, still support legacy set_cpu_offload_max_bytes
+        from vllm.model_executor.models.utils import set_cpu_offload_max_bytes
         from vllm.model_executor.offloader import (
             NoopOffloader,
             OffloaderV2,
             UVAOffloader,
             set_offloader,
         )
-
-        # For backward compatibility, still support legacy set_cpu_offload_max_bytes
-        from vllm.model_executor.models.utils import set_cpu_offload_max_bytes
 
         # Priority: V2 offloading if configured, else UVA, else noop
         if self.cache_config.offload_group_size > 0:
