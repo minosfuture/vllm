@@ -11,7 +11,6 @@ from torch.func import functional_call
 
 from vllm.logger import init_logger
 from vllm.model_executor.offloader.base import BaseOffloader
-from vllm.model_executor.parameter import ModelWeightParameter
 from vllm.utils.platform_utils import is_pin_memory_available
 
 logger = init_logger(__name__)
@@ -282,21 +281,24 @@ class _CpuParamOffloader(_BaseParamOffloader):
 
     def __init__(self, module: nn.Module, param_name: str):
         super().__init__(module, param_name)
-        self.cpu_data: torch.Tensor | None = None
 
-        # Offload immediately to free GPU memory
-        self._offload_to_cpu()
+        # Offload immediately to free GPU memory by moving param.data to CPU
+        self._move_param_to_cpu()
 
-    def _offload_to_cpu(self):
-        """Move parameter to pinned CPU memory and replace with meta tensor."""
+    def _move_param_to_cpu(self):
+        """Move parameter data to pinned CPU memory (modify param.data in-place).
+
+        This follows SGLang's approach: keep the parameter in the module,
+        but change param.data to point to CPU memory instead of GPU memory.
+        """
         param = self._param
         pin_memory = is_pin_memory_available()
 
         # Calculate memory size
         self.offloaded_bytes = param.data.numel() * param.data.element_size()
 
-        # Create pinned CPU tensor
-        self.cpu_data = torch.empty_strided(
+        # Create pinned CPU tensor with same layout
+        cpu_data = torch.empty_strided(
             size=param.data.size(),
             stride=param.data.stride(),
             dtype=param.data.dtype,
@@ -304,7 +306,7 @@ class _CpuParamOffloader(_BaseParamOffloader):
             device="cpu",
             pin_memory=pin_memory,
         )
-        self.cpu_data.copy_(param.data)
+        cpu_data.copy_(param.data)
 
         logger.debug(
             f"[OffloaderV2] Offloaded parameter '{self._param_name}': "
@@ -312,33 +314,17 @@ class _CpuParamOffloader(_BaseParamOffloader):
             f"size={self.offloaded_bytes / 1e9:.6f} GB, pinned={pin_memory}"
         )
 
-        # Move parameter to meta device to free GPU memory
-        # Create new parameter with meta tensor and replace the old one
-        old_param_type = type(param)
-        meta_data = param.data.to("meta")
-
-        if old_param_type == ModelWeightParameter:
-            # ModelWeightParameter needs input_dim, output_dim, and weight_loader
-            new_param = ModelWeightParameter(
-                data=meta_data,
-                input_dim=param.input_dim,
-                output_dim=param.output_dim,
-                weight_loader=param.weight_loader,
-            )
-        elif old_param_type == nn.Parameter:
-            new_param = nn.Parameter(meta_data, requires_grad=False)
-        else:
-            raise ValueError(
-                f"Unknown parameter type: {old_param_type} for {self._param_name}"
-            )
-
-        setattr(self._module, self._param_name, new_param)
+        # Modify param.data in-place to point to CPU memory
+        # This keeps the parameter in the module but with CPU data
+        param.data = cpu_data
 
     def post_init(self):
         """No-op: offloading already done in __init__."""
         pass
 
     def create_device_tensor(self) -> torch.Tensor:
-        """Load from CPU to GPU (async if pinned)."""
-        assert self.cpu_data is not None, "CPU data not initialized"
-        return self.cpu_data.to("cuda", non_blocking=True)
+        """Load from CPU to GPU (async if pinned).
+
+        Returns a CUDA copy of the parameter (which has CPU data).
+        """
+        return self._param.to("cuda", non_blocking=True)
