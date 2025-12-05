@@ -13,7 +13,7 @@ import torch.distributed
 import torch.nn as nn
 
 import vllm.envs as envs
-from vllm.config import CUDAGraphMode, VllmConfig, set_current_vllm_config
+from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.distributed import (
     ensure_model_parallel_initialized,
     init_distributed_environment,
@@ -40,7 +40,11 @@ from vllm.profiler.gpu_profiler import CudaProfilerWrapper, TorchProfilerWrapper
 from vllm.sequence import IntermediateTensors
 from vllm.tasks import SupportedTask
 from vllm.utils.mem_constants import GiB_bytes
-from vllm.utils.mem_utils import MemorySnapshot, memory_profiling
+from vllm.utils.mem_utils import (
+    MemorySnapshot,
+    memory_profiling,
+    memory_snapshot_profiling,
+)
 from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
 from vllm.v1.engine import ReconfigureDistributedRequest, ReconfigureRankType
 from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
@@ -268,9 +272,20 @@ class Worker(WorkerBase):
     # to hijack tensor allocation.
     def load_model(self) -> None:
         eep_scale_up = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
+
+        # Optional memory snapshot profiling for debugging OOM during loading
+        memory_snapshot_ctx: AbstractContextManager = nullcontext()
+        if envs.VLLM_MEMORY_SNAPSHOT_DIR:
+            memory_snapshot_ctx = memory_snapshot_profiling(
+                output_dir=envs.VLLM_MEMORY_SNAPSHOT_DIR,
+                filename_prefix=f"load_model_rank{self.rank}",
+                max_entries=envs.VLLM_MEMORY_SNAPSHOT_MAX_ENTRIES,
+            )
+
         with (
             self._maybe_get_memory_pool_context(tag="weights"),
             set_current_vllm_config(self.vllm_config),
+            memory_snapshot_ctx,
         ):
             self.model_runner.load_model(eep_scale_up=eep_scale_up)
 

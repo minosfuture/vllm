@@ -93,6 +93,8 @@ if TYPE_CHECKING:
     VLLM_TORCH_PROFILER_RECORD_SHAPES: bool = False
     VLLM_TORCH_PROFILER_WITH_PROFILE_MEMORY: bool = False
     VLLM_TORCH_PROFILER_DISABLE_ASYNC_LLM: bool = False
+    VLLM_MEMORY_SNAPSHOT_DIR: str | None = None
+    VLLM_MEMORY_SNAPSHOT_MAX_ENTRIES: int = 100000
     VLLM_USE_AOT_COMPILE: bool = False
     VLLM_USE_BYTECODE_HOOK: bool = False
     VLLM_FORCE_AOT_LOAD: bool = False
@@ -903,6 +905,21 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # (enabled by default).
     "VLLM_TORCH_PROFILER_DUMP_CUDA_TIME_TOTAL": lambda: bool(
         os.getenv("VLLM_TORCH_PROFILER_DUMP_CUDA_TIME_TOTAL", "1") != "0"
+    ),
+    # Enables memory snapshot profiling during model loading if set.
+    # Memory snapshots will be saved to this directory with callstack info.
+    # The snapshot can be visualized at https://pytorch.org/memory_viz
+    # Note that it must be an absolute path.
+    "VLLM_MEMORY_SNAPSHOT_DIR": lambda: (
+        None
+        if (val := os.getenv("VLLM_MEMORY_SNAPSHOT_DIR")) is None
+        else os.path.abspath(os.path.expanduser(val))
+    ),
+    # Maximum number of memory allocation entries to record.
+    # Higher values capture more allocations but use more memory.
+    # Default: 100000
+    "VLLM_MEMORY_SNAPSHOT_MAX_ENTRIES": lambda: int(
+        os.getenv("VLLM_MEMORY_SNAPSHOT_MAX_ENTRIES", "100000")
     ),
     # If set, vLLM will use Triton implementations of AWQ.
     "VLLM_USE_TRITON_AWQ": lambda: bool(int(os.getenv("VLLM_USE_TRITON_AWQ", "0"))),
