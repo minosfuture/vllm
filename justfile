@@ -30,19 +30,20 @@
 # ------------------------------------------------------------------------------
 
 MODEL := "nvidia/DeepSeek-R1-0528-FP4-v2"
-HF_CACHE_HOME := "$HOME/.cache/huggingface/"
+HF_CACHE_HOME := "/data/numa0/ming_hf_cache/"
 DECODE_MASTER := "192.168.5.50"   # Decode cluster master node IP
+#NSYS := "nsys launch -t cuda,nvtx --cuda-graph-trace=node"
 NSYS := ""
 
 export HF_HOME := HF_CACHE_HOME
-export FLASHINFER_CACHE_DIR := "$HOME/.cache/flashinfer/"
+export FLASHINFER_CACHE_DIR := "/data/nfs01/ming/.cache/flashinfer/"
 
 # ------------------------------------------------------------------------------
 # vLLM Environment Variables
 # ------------------------------------------------------------------------------
 
 COMMON_ENV := '''
-VLLM_MEMORY_SNAPSHOT_DIR=/tmp/mem_profile \
+VLLM_MEMORY_SNAPSHOT_DIR=/data/nfs01/ming/mem_profile \
 VLLM_MEMORY_SNAPSHOT_MAX_ENTRIES=2000000 \
 CUDA_HOME=/usr/local/cuda \
 LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
@@ -81,19 +82,21 @@ VLLM_FLASHINFER_MOE_BACKEND=latency \
 
 #CUTE_DSL_ARCH=sm_100a \
 #VLLM_EP_USE_SBO=1 \
-#VLLM_DEEPEPLL_NVFP4_DISPATCH=1 \
 DECODE_ENV := COMMON_ENV + ''' \
+VLLM_DEEPEPLL_NVFP4_DISPATCH=1 \
+CUTE_DSL_ARCH=sm_100a \
 VLLM_USE_STANDALONE_COMPILE=0 \
 VLLM_DEEPEP_BUFFER_SIZE_MB=0 \
 VLLM_DEEPEP_LOW_LATENCY_ALLOW_NVLINK=1 \
 VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL=1 \
-VLLM_FLASHINFER_MOE_BACKEND=latency \
+VLLM_FLASHINFER_MOE_BACKEND=masked_gemm \
 '''
 
 # ------------------------------------------------------------------------------
 # vLLM Arguments
 # ------------------------------------------------------------------------------
 
+#--kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
 COMMON_ARGS := '''
 --async-scheduling \
 --disable_custom_all_reduce \
@@ -101,7 +104,6 @@ COMMON_ARGS := '''
 --disable_nccl_for_dp_synchronization \
 --enable-expert-parallel \
 --kv-cache-dtype fp8 \
---kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
 --tensor-parallel-size 1 \
 --trust-remote-code \
 '''
@@ -123,12 +125,12 @@ PREFILL_ARGS := COMMON_ARGS + ''' \
 '''
 
 DECODE_ARGS := COMMON_ARGS + ''' \
---all2all-backend deepep_low_latency \
+--all2all-backend allgather_reducescatter \
 --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","max_cudagraph_capture_size":2048}' \
 --data-parallel-hybrid-lb \
 --data-parallel-size 8 \
 --data-parallel-size-local 4 \
---gpu-memory-utilization 0.9 \
+--gpu-memory-utilization 0.86 \
 --max-model-len 4096 \
 --max-num-batched-tokens 16384 \
 --max-num-seqs 2048 \
@@ -165,7 +167,7 @@ prefill-off NUMA="0" PORT="8000":
 
 # Start lead decode
 decode:
-    {{DECODE_ENV}} vllm serve {{MODEL}} \
+    {{DECODE_ENV}} {{NSYS}} vllm serve {{MODEL}} \
         {{DECODE_ARGS}} \
         --data-parallel-address `hostname -i` \
         2>&1 | tee decode.log
