@@ -43,7 +43,7 @@ export FLASHINFER_CACHE_DIR := "$HOME/.cache/flashinfer/"
 
 COMMON_ENV := '''
 VLLM_MEMORY_SNAPSHOT_DIR=/tmp/mem_profile \
-VLLM_MEMORY_SNAPSHOT_MAX_ENTRIES=200000 \
+VLLM_MEMORY_SNAPSHOT_MAX_ENTRIES=2000000 \
 CUDA_HOME=/usr/local/cuda \
 LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
 NCCL_CUMEM_ENABLE=1 \
@@ -76,7 +76,7 @@ VLLM_USE_NCCL_SYMM_MEM=1 \
 VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
 VLLM_FLASHINFER_ALLREDUCE_FUSION_THRESHOLDS_MB='{"2":32,"4":32,"8":8}' \
 VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE=1 \
-VLLM_FLASHINFER_MOE_BACKEND=throughput \
+VLLM_FLASHINFER_MOE_BACKEND=latency \
 '''
 
 #CUTE_DSL_ARCH=sm_100a \
@@ -107,6 +107,7 @@ COMMON_ARGS := '''
 '''
 
 PREFILL_ARGS := COMMON_ARGS + ''' \
+--load-format dummy \
 --all2all-backend allgather_reducescatter \
 --compilation_config.custom_ops+=+quant_fp8,+rms_norm \
 --compilation_config.pass_config.enable_attn_fusion true \
