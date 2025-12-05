@@ -30,18 +30,20 @@
 # ------------------------------------------------------------------------------
 
 MODEL := "nvidia/DeepSeek-R1-0528-FP4-v2"
-HF_CACHE_HOME := "/data/numa0/ming_hf_cache/"
+HF_CACHE_HOME := "$HOME/.cache/huggingface/"
 DECODE_MASTER := "192.168.5.50"   # Decode cluster master node IP
 NSYS := ""
 
 export HF_HOME := HF_CACHE_HOME
-export FLASHINFER_CACHE_DIR := "/data/nfs01/ming/.cache/flashinfer/"
+export FLASHINFER_CACHE_DIR := "$HOME/.cache/flashinfer/"
 
 # ------------------------------------------------------------------------------
 # vLLM Environment Variables
 # ------------------------------------------------------------------------------
 
 COMMON_ENV := '''
+VLLM_MEMORY_SNAPSHOT_DIR=/tmp/mem_profile \
+VLLM_MEMORY_SNAPSHOT_MAX_ENTRIES=200000 \
 CUDA_HOME=/usr/local/cuda \
 LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
 NCCL_CUMEM_ENABLE=1 \
