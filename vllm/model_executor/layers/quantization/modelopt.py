@@ -1225,6 +1225,7 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
             output_dim=2,
             weight_loader=weight_loader,
         )
+        logger.info(f"allocate w13_weight {w13_weight.shape=}")
         layer.register_parameter("w13_weight", w13_weight)
 
         # GEMM 2
@@ -1428,11 +1429,18 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
                 requires_grad=False,
             )
 
+            logger.info(
+                f"remove {layer=} {layer.w13_weight.shape=}, {layer.w2_weight.shape=}, {sys.getrefcount(layer.w13_weight)=}"
+            )
             # Clean up weights that won't be used by TRT-LLM
             del layer.w2_weight
             del layer.w2_weight_scale
             del layer.w13_weight
             del layer.w13_weight_scale
+            import gc
+
+            gc.collect()
+            torch.cuda.empty_cache()  # Optional: releases cached memory back to the GPU
         elif self.use_marlin:
             # Marlin processing
             prepare_moe_fp4_layer_for_marlin(layer)

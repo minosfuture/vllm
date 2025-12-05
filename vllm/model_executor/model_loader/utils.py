@@ -96,7 +96,8 @@ def process_weights_after_loading(
 
     maybe_save_metadata_and_attributes_for_weight_reloading(model, model_config)
 
-    for _, module in model.named_modules():
+    for name, module in model.named_modules():
+        logger.info(f"layer: {name}")
         quant_method = getattr(module, "quant_method", None)
         if isinstance(quant_method, QuantizeMethodBase):
             # When quant methods need to process weights after loading
@@ -109,7 +110,8 @@ def process_weights_after_loading(
 
     # Initialize post-load attention weights for both Attention and MLA.
     # NOTE: Happens after other modules so we can easily decompress weights.
-    for _, module in model.named_modules():
+    for name, module in model.named_modules():
+        logger.info(f"layer: {name}")
         if isinstance(module, (Attention, MLAAttention)) and hasattr(
             module, "process_weights_after_loading"
         ):

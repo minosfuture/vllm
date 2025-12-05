@@ -6,6 +6,7 @@ import torch
 
 import vllm.envs as envs
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
+from vllm.logger import init_logger
 from vllm.model_executor.layers.fused_moe.config import (
     FusedMoEConfig,
     FusedMoEQuantConfig,
@@ -32,6 +33,8 @@ __all__ = [
     "reorder_w1w3_to_w3w1",
     "build_flashinfer_fp4_cutlass_moe_prepare_finalize",
 ]
+
+logger = init_logger(__name__)
 
 
 def is_flashinfer_fp4_cutlass_moe_available() -> bool:
@@ -170,6 +173,7 @@ def prepare_static_weights_for_trtllm_fp4_moe(
             .view(torch.uint8)[permute_indices.to(gemm1_weights_fp4.device)]
             .contiguous()
         )
+        logger.info(f"append {gemm1_weights_fp4_shuffled[-1].shape=}")
 
         permute_sf_indices = _maybe_get_cached_w3_w1_permute_indices(
             _cache_permute_indices,
@@ -216,6 +220,7 @@ def prepare_static_weights_for_trtllm_fp4_moe(
 
     # Stack weights for all experts
     gemm1_weights_fp4_shuffled = torch.stack(gemm1_weights_fp4_shuffled)
+    logger.info(f"{gemm1_weights_fp4_shuffled.shape=}")
     gemm1_scales_fp4_shuffled = (
         torch.stack(gemm1_scales_fp4_shuffled)
         .view(torch.float8_e4m3fn)

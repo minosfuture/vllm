@@ -64,6 +64,7 @@ class OffloaderV2(BaseOffloader):
         offload_submodules = []
 
         for module_index, module in enumerate(modules_generator):
+            logger.info(f"{module_index=}: {module=}")
             all_modules.append(module)
 
             # Select layers to offload based on group pattern
