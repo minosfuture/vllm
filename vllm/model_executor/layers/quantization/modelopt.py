@@ -1225,7 +1225,7 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
             output_dim=2,
             weight_loader=weight_loader,
         )
-        logger.info(f"allocate w13_weight {w13_weight.shape=}")
+        logger.debug(f"allocate w13_weight {w13_weight.shape=}")
         layer.register_parameter("w13_weight", w13_weight)
 
         # GEMM 2
@@ -1429,9 +1429,12 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
                 requires_grad=False,
             )
 
-            logger.info(
+            import sys
+            logger.debug(
                 f"remove {layer=} {layer.w13_weight.shape=}, {layer.w2_weight.shape=}, {sys.getrefcount(layer.w13_weight)=}"
             )
+            import gc
+            logger.debug(gc.get_referrers(layer.w13_weight))
             # Clean up weights that won't be used by TRT-LLM
             del layer.w2_weight
             del layer.w2_weight_scale
