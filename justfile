@@ -29,9 +29,10 @@
 # Configuration
 # ------------------------------------------------------------------------------
 
-MODEL := "nvidia/DeepSeek-R1-0528-FP4-v2"
+MODEL := "nvidia/DeepSeek-R1-0528-FP4"
 HF_CACHE_HOME := "/data/numa0/ming_hf_cache/"
 DECODE_MASTER := "192.168.5.50"   # Decode cluster master node IP
+#NSYS := "nsys launch -t cuda,nvtx --cuda-graph-trace=node"
 NSYS := ""
 
 export HF_HOME := HF_CACHE_HOME
@@ -41,70 +42,82 @@ export FLASHINFER_CACHE_DIR := "/data/nfs01/ming/.cache/flashinfer/"
 # vLLM Environment Variables
 # ------------------------------------------------------------------------------
 
+#VLLM_USE_FLASHINFER_MOE_FP8=1 \
+#VLLM_MOE_DP_CHUNK_SIZE=1024 \
+##VLLM_USE_NCCL_SYMM_MEM=1
+#NCCL_MNNVL_ENABLE=1 \
+#NCCL_NVLS_ENABLE=1 \
+# UCX_TLS=all \
+#VLLM_NIXL_ABORT_REQUEST_TIMEOUT=300 \
+#VLLM_NIXL_SIDE_CHANNEL_HOST=`hostname -i` \
+#VLLM_NIXL_SIDE_CHANNEL_PORT=5700 \
+#VLLM_USE_DEEP_GEMM=0 \
 COMMON_ENV := '''
+VLLM_MEMORY_SNAPSHOT_DIR=/data/nfs01/ming/mem_profile \
+VLLM_MEMORY_SNAPSHOT_MAX_ENTRIES=2000000 \
 CUDA_HOME=/usr/local/cuda \
 LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
 NCCL_CUMEM_ENABLE=1 \
-NCCL_MNNVL_ENABLE=1 \
-NCCL_NVLS_ENABLE=1 \
 NVSHMEM_IB_ENABLE_IBGDA=1 \
 PATH=/usr/local/cuda/bin:$PATH \
-UCX_TLS=all \
 VLLM_ATTENTION_BACKEND=FLASHINFER_MLA \
-VLLM_DISABLE_FLASHINFER_PREFILL=0 \
-VLLM_FORCE_TORCH_ALLREDUCE=1 \
 VLLM_LOGGING_LEVEL=INFO \
-VLLM_NIXL_ABORT_REQUEST_TIMEOUT=300 \
-VLLM_NIXL_SIDE_CHANNEL_HOST=`hostname -i` \
-VLLM_NIXL_SIDE_CHANNEL_PORT=5700 \
 VLLM_TORCH_PROFILER_DIR=./profile/ \
-VLLM_USE_DEEP_GEMM=0 \
 VLLM_USE_FLASHINFER_MOE_FP4=1 \
-VLLM_USE_FLASHINFER_MOE_FP8=1 \
 VLLM_USE_FLASHINFER_SAMPLER=1 \
+VLLM_DISABLE_FLASHINFER_PREFILL=0 \
 VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
 VLLM_V1_OUTPUT_PROC_CHUNK_SIZE=2048 \
 VLLM_RANDOMIZE_DP_DUMMY_INPUTS=1 \
-VLLM_MOE_DP_CHUNK_SIZE=1024 \
+VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
 '''
 
 PREFILL_ENV := COMMON_ENV + ''' \
 VLLM_ENABLE_MOE_DP_CHUNK=0 \
 VLLM_USE_NCCL_SYMM_MEM=1 \
-VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
 VLLM_FLASHINFER_ALLREDUCE_FUSION_THRESHOLDS_MB='{"2":32,"4":32,"8":8}' \
 VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE=1 \
 VLLM_FLASHINFER_MOE_BACKEND=throughput \
 '''
 
-#CUTE_DSL_ARCH=sm_100a \
+#VLLM_MOE_ROUTING_SIMULATION_STRATEGY=uniform_random \
 #VLLM_EP_USE_SBO=1 \
-#VLLM_DEEPEPLL_NVFP4_DISPATCH=1 \
 DECODE_ENV := COMMON_ENV + ''' \
+VLLM_USE_NCCL_SYMM_MEM=1 \
+\
+VLLM_DEEPEPLL_NVFP4_DISPATCH=1 \
+NVIDIA_GDRCOPY=1 \
+NVSHMEM_IB_ENABLE_IBGDA=1 \
+VLLM_SKIP_P2P_CHECK=1 \
+NCCL_CUMEM_ENABLE=1 \
+NCCL_NVLS_DISABLE=1 \
+ \
+CUTE_DSL_ARCH=sm_100a \
 VLLM_USE_STANDALONE_COMPILE=0 \
 VLLM_DEEPEP_BUFFER_SIZE_MB=0 \
 VLLM_DEEPEP_LOW_LATENCY_ALLOW_NVLINK=1 \
 VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL=1 \
-VLLM_FLASHINFER_MOE_BACKEND=latency \
+VLLM_FLASHINFER_MOE_BACKEND=masked_gemm \
 '''
 
 # ------------------------------------------------------------------------------
 # vLLM Arguments
 # ------------------------------------------------------------------------------
 
+#--kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
 COMMON_ARGS := '''
 --async-scheduling \
---disable_custom_all_reduce \
 --disable-uvicorn-access-log \
+--disable_custom_all_reduce \
 --disable_nccl_for_dp_synchronization \
 --enable-expert-parallel \
 --kv-cache-dtype fp8 \
---kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
 --tensor-parallel-size 1 \
 --trust-remote-code \
 '''
 
 PREFILL_ARGS := COMMON_ARGS + ''' \
+--load-format dummy \
 --all2all-backend allgather_reducescatter \
 --compilation_config.custom_ops+=+quant_fp8,+rms_norm \
 --compilation_config.pass_config.enable_attn_fusion true \
@@ -119,16 +132,17 @@ PREFILL_ARGS := COMMON_ARGS + ''' \
 --trust-remote-code \
 '''
 
+#--data-parallel-hybrid-lb \
 DECODE_ARGS := COMMON_ARGS + ''' \
+--stream-interval 50 \
 --all2all-backend deepep_low_latency \
 --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","max_cudagraph_capture_size":2048}' \
---data-parallel-hybrid-lb \
 --data-parallel-size 8 \
 --data-parallel-size-local 4 \
---gpu-memory-utilization 0.9 \
+--gpu-memory-utilization 0.86 \
 --max-model-len 4096 \
 --max-num-batched-tokens 16384 \
---max-num-seqs 2048 \
+--max-num-seqs 1024 \
 '''
 
 # ==============================================================================
@@ -162,7 +176,7 @@ prefill-off NUMA="0" PORT="8000":
 
 # Start lead decode
 decode:
-    {{DECODE_ENV}} vllm serve {{MODEL}} \
+    {{DECODE_ENV}} {{NSYS}} vllm serve {{MODEL}} \
         {{DECODE_ARGS}} \
         --data-parallel-address `hostname -i` \
         2>&1 | tee decode.log
@@ -173,7 +187,107 @@ decode-worker DPSR="4":
         {{DECODE_ARGS}} \
         --data-parallel-address {{DECODE_MASTER}} \
         --data-parallel-start-rank={{DPSR}} \
+        --headless \
         2>&1 | tee decode.log
+
+#VLLM_MOE_ROUTING_SIMULATION_STRATEGY=uniform_random \
+# --no-enable-prefix-caching \
+decode0:
+    VLLM_TORCH_PROFILER_DIR=./profile/ \
+    NVIDIA_GDRCOPY=1 \
+    NVSHMEM_IB_ENABLE_IBGDA=1 \
+    VLLM_SKIP_P2P_CHECK=1 \
+    NCCL_CUMEM_ENABLE=1 \
+    NCCL_NVLS_DISABLE=1 \
+    VLLM_RANDOMIZE_DP_DUMMY_INPUTS=1 \
+    VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
+    VLLM_USE_FLASHINFER_SAMPLER=1 \
+    VLLM_USE_NCCL_SYMM_MEM=1 \
+    VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
+    VLLM_V1_OUTPUT_PROC_CHUNK_SIZE=2048 \
+    VLLM_ATTENTION_BACKEND=FLASHINFER_MLA \
+    VLLM_USE_FLASHINFER_MOE_FP4=1 \
+    VLLM_FLASHINFER_MOE_BACKEND=masked_gemm \
+    VLLM_USE_STANDALONE_COMPILE=0 \
+    VLLM_DEEPEPLL_NVFP4_DISPATCH=1 \
+    VLLM_DEEPEP_BUFFER_SIZE_MB=0 \
+    VLLM_DEEPEP_LOW_LATENCY_ALLOW_NVLINK=1 \
+    VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL=1 \
+    vllm serve {{MODEL}} \
+    --kv-cache-dtype fp8 \
+    --tensor-parallel-size 1 \
+    --pipeline-parallel-size 1 \
+    --enable-expert-parallel \
+    --data-parallel-size 8 \
+    --data-parallel-size-local 4 \
+    --data-parallel-address 192.168.5.50 \
+    --data-parallel-start-rank=0 \
+    --data-parallel-rpc-port 13345 \
+    --max-model-len 4096 \
+    --disable-uvicorn-access-log \
+    --port 8000 \
+    --async-scheduling \
+    --all2all-backend deepep_low_latency \
+    --stream-interval 50 \
+    --max-num-seqs 1024 \
+    --max-num-batched-tokens 16384 \
+    --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","max_cudagraph_capture_size":2048}' \
+    \
+    --disable_custom_all_reduce \
+    --disable_nccl_for_dp_synchronization \
+    \
+    --gpu-memory-utilization 0.86 2>&1 | tee decode0.log
+
+#VLLM_MOE_ROUTING_SIMULATION_STRATEGY=uniform_random \
+#--no-enable-prefix-caching \
+# VLLM_FORCE_TORCH_ALLREDUCE=1 \
+# VLLM_MOE_DP_CHUNK_SIZE=1024 \
+decode1:
+    VLLM_TORCH_PROFILER_DIR=./profile/ \
+    NVIDIA_GDRCOPY=1 \
+    NVSHMEM_IB_ENABLE_IBGDA=1 \
+    VLLM_SKIP_P2P_CHECK=1 \
+    NCCL_CUMEM_ENABLE=1 \
+    NCCL_NVLS_DISABLE=1 \
+    VLLM_RANDOMIZE_DP_DUMMY_INPUTS=1 \
+    VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
+    VLLM_USE_FLASHINFER_SAMPLER=1 \
+    VLLM_USE_NCCL_SYMM_MEM=1 \
+    VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
+    VLLM_V1_OUTPUT_PROC_CHUNK_SIZE=2048 \
+    VLLM_ATTENTION_BACKEND=FLASHINFER_MLA \
+    VLLM_USE_FLASHINFER_MOE_FP4=1 \
+    VLLM_FLASHINFER_MOE_BACKEND=masked_gemm \
+    VLLM_USE_STANDALONE_COMPILE=0 \
+    VLLM_DEEPEPLL_NVFP4_DISPATCH=1 \
+    VLLM_DEEPEP_BUFFER_SIZE_MB=0 \
+    VLLM_DEEPEP_LOW_LATENCY_ALLOW_NVLINK=1 \
+    VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL=1 \
+    vllm serve {{MODEL}} \
+    --kv-cache-dtype fp8 \
+    --tensor-parallel-size 1 \
+    --pipeline-parallel-size 1 \
+    --enable-expert-parallel \
+    --data-parallel-size 8 \
+    --data-parallel-size-local 4 \
+    --data-parallel-address 192.168.5.50 \
+    --data-parallel-start-rank=4 \
+    --headless \
+    --data-parallel-rpc-port 13345 \
+    --max-model-len 4096 \
+    --disable-uvicorn-access-log \
+    --port 8000 \
+    --async-scheduling \
+    --all2all-backend deepep_low_latency \
+    --stream-interval 50 \
+    --max-num-seqs 1024 \
+    --max-num-batched-tokens 16384 \
+    --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","max_cudagraph_capture_size":2048}' \
+    \
+    --disable_custom_all_reduce \
+    --disable_nccl_for_dp_synchronization \
+    \
+    --gpu-memory-utilization 0.86 2>&1 | tee decode1.log
 
 # ------------------------------------------------------------------------------
 # SGLang Configuration
@@ -269,12 +383,16 @@ quickrun PORT="8000":
         -H "Content-Type: application/json" \
         -d '{"messages": [{"role": "user", "content": "Hello!"}]}'
 
-bench BS="4096" RATE="inf" ISL="2048" OSL="1024" PORT="8192" COMMON_PREFIX="0":
+wait PORT="8000":
     #!/usr/bin/env bash
     while ! curl -s "http://localhost:{{PORT}}/health" >/dev/null 2>&1; do
         echo -n "."
         sleep 5
     done
+
+bench BS="4096" RATE="inf" ISL="2048" OSL="1024" PORT="8192" COMMON_PREFIX="0":
+    #!/usr/bin/env bash
+    just wait {{PORT}}
     vllm bench serve \
         --common-prefix-len {{COMMON_PREFIX}} \
         --dataset-name random \
@@ -312,6 +430,7 @@ sgl-bench:
         --skip-warmup
 
 eval:
+    just wait
     lm_eval --model local-completions --tasks gsm8k \
         --model_args model={{MODEL}},base_url=http://127.0.0.1:8000/v1/completions,num_concurrent=32 \
         --limit 100
@@ -320,7 +439,7 @@ eval:
 # Profiling
 # ==============================================================================
 
-profile URL="localhost:8000" DUR="1":
+profile URL="http://localhost:8000" DUR="1":
     curl -X POST {{URL}}/start_profile && sleep {{DUR}} && curl -X POST {{URL}}/stop_profile
 
 sgl-profile:
