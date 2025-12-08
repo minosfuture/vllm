@@ -29,7 +29,7 @@
 # Configuration
 # ------------------------------------------------------------------------------
 
-MODEL := "nvidia/DeepSeek-R1-0528-FP4-v2"
+MODEL := "nvidia/DeepSeek-R1-0528-FP4"
 HF_CACHE_HOME := "/data/numa0/ming_hf_cache/"
 DECODE_MASTER := "192.168.5.50"   # Decode cluster master node IP
 NSYS := ""
@@ -79,13 +79,13 @@ VLLM_FLASHINFER_MOE_BACKEND=throughput \
 
 #CUTE_DSL_ARCH=sm_100a \
 #VLLM_EP_USE_SBO=1 \
-#VLLM_DEEPEPLL_NVFP4_DISPATCH=1 \
 DECODE_ENV := COMMON_ENV + ''' \
+VLLM_DEEPEPLL_NVFP4_DISPATCH=1 \
 VLLM_USE_STANDALONE_COMPILE=0 \
 VLLM_DEEPEP_BUFFER_SIZE_MB=0 \
 VLLM_DEEPEP_LOW_LATENCY_ALLOW_NVLINK=1 \
 VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL=1 \
-VLLM_FLASHINFER_MOE_BACKEND=latency \
+VLLM_FLASHINFER_MOE_BACKEND=masked_gemm \
 '''
 
 # ------------------------------------------------------------------------------
@@ -128,7 +128,7 @@ DECODE_ARGS := COMMON_ARGS + ''' \
 --gpu-memory-utilization 0.9 \
 --max-model-len 4096 \
 --max-num-batched-tokens 16384 \
---max-num-seqs 2048 \
+--max-num-seqs 1024 \
 '''
 
 # ==============================================================================
@@ -269,12 +269,17 @@ quickrun PORT="8000":
         -H "Content-Type: application/json" \
         -d '{"messages": [{"role": "user", "content": "Hello!"}]}'
 
-bench BS="4096" RATE="inf" ISL="2048" OSL="1024" PORT="8192" COMMON_PREFIX="0":
+
+wait PORT="8000":
     #!/usr/bin/env bash
     while ! curl -s "http://localhost:{{PORT}}/health" >/dev/null 2>&1; do
         echo -n "."
         sleep 5
     done
+
+bench BS="4096" RATE="inf" ISL="2048" OSL="1024" PORT="8192" COMMON_PREFIX="0":
+    #!/usr/bin/env bash
+    just wait {{PORT}}
     vllm bench serve \
         --common-prefix-len {{COMMON_PREFIX}} \
         --dataset-name random \
@@ -312,6 +317,7 @@ sgl-bench:
         --skip-warmup
 
 eval:
+    just wait
     lm_eval --model local-completions --tasks gsm8k \
         --model_args model={{MODEL}},base_url=http://127.0.0.1:8000/v1/completions,num_concurrent=32 \
         --limit 100
