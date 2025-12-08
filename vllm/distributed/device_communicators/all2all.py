@@ -76,7 +76,6 @@ class NaiveAll2AllManager(All2AllManagerBase):
         router_logits = self.naive_multicast(
             router_logits, cu_tokens_across_sp_cpu, is_sequence_parallel
         )
-
         return hidden_states, router_logits
 
     def combine(
@@ -114,11 +113,7 @@ class AgRsAll2AllManager(All2AllManagerBase):
         hidden_states: torch.Tensor,
         router_logits: torch.Tensor,
         is_sequence_parallel: bool = False,
-        extra_tensors: list[torch.Tensor] | None = None,
-    ) -> (
-        tuple[torch.Tensor, torch.Tensor]
-        | tuple[torch.Tensor, torch.Tensor, list[torch.Tensor]]
-    ):
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Gather hidden_states and router_logits from all dp ranks.
         """
@@ -126,22 +121,15 @@ class AgRsAll2AllManager(All2AllManagerBase):
         assert dp_metadata is not None
         sizes = dp_metadata.get_chunk_sizes_across_dp_rank()
         assert sizes is not None
+
         dist_group = get_ep_group() if is_sequence_parallel else get_dp_group()
         assert sizes[dist_group.rank_in_group] == hidden_states.shape[0]
-
-        tensors_to_gather = [hidden_states, router_logits]
-        if extra_tensors is not None:
-            tensors_to_gather.extend(extra_tensors)
-
-        gathered_tensors = dist_group.all_gatherv(
-            tensors_to_gather,
+        hidden_states, router_logits = dist_group.all_gatherv(
+            [hidden_states, router_logits],
             dim=0,
             sizes=sizes,
         )
-
-        if extra_tensors is not None:
-            return (gathered_tensors[0], gathered_tensors[1], gathered_tensors[2:])
-        return gathered_tensors[0], gathered_tensors[1]
+        return hidden_states, router_logits
 
     def combine(
         self, hidden_states: torch.Tensor, is_sequence_parallel: bool = False
