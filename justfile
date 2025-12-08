@@ -32,8 +32,8 @@
 MODEL := "nvidia/DeepSeek-R1-0528-FP4"
 HF_CACHE_HOME := "/data/numa0/ming_hf_cache/"
 DECODE_MASTER := "192.168.5.50"   # Decode cluster master node IP
-#NSYS := "nsys launch -t cuda,nvtx --cuda-graph-trace=node"
-NSYS := ""
+NSYS := "nsys launch -t cuda,nvtx --cuda-graph-trace=node"
+#NSYS := ""
 
 export HF_HOME := HF_CACHE_HOME
 export FLASHINFER_CACHE_DIR := "/data/nfs01/ming/.cache/flashinfer/"
@@ -43,7 +43,6 @@ export FLASHINFER_CACHE_DIR := "/data/nfs01/ming/.cache/flashinfer/"
 # ------------------------------------------------------------------------------
 
 #VLLM_USE_FLASHINFER_MOE_FP8=1 \
-#VLLM_MOE_DP_CHUNK_SIZE=1024 \
 ##VLLM_USE_NCCL_SYMM_MEM=1
 #NCCL_MNNVL_ENABLE=1 \
 #NCCL_NVLS_ENABLE=1 \
@@ -70,6 +69,7 @@ VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
 VLLM_V1_OUTPUT_PROC_CHUNK_SIZE=2048 \
 VLLM_RANDOMIZE_DP_DUMMY_INPUTS=1 \
 VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
+VLLM_MOE_DP_CHUNK_SIZE=256 \
 '''
 
 PREFILL_ENV := COMMON_ENV + ''' \
@@ -105,10 +105,10 @@ VLLM_FLASHINFER_MOE_BACKEND=masked_gemm \
 # ------------------------------------------------------------------------------
 
 #--kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
+#--disable_custom_all_reduce \
 COMMON_ARGS := '''
 --async-scheduling \
 --disable-uvicorn-access-log \
---disable_custom_all_reduce \
 --disable_nccl_for_dp_synchronization \
 --enable-expert-parallel \
 --kv-cache-dtype fp8 \
@@ -192,8 +192,10 @@ decode-worker DPSR="4":
 
 #VLLM_MOE_ROUTING_SIMULATION_STRATEGY=uniform_random \
 # --no-enable-prefix-caching \
+# --disable_custom_all_reduce \
+#--disable_nccl_for_dp_synchronization \
 decode0:
-    VLLM_TORCH_PROFILER_DIR=./profile/ \
+    VLLM_MOE_DP_CHUNK_SIZE=1024 \
     NVIDIA_GDRCOPY=1 \
     NVSHMEM_IB_ENABLE_IBGDA=1 \
     VLLM_SKIP_P2P_CHECK=1 \
@@ -213,7 +215,7 @@ decode0:
     VLLM_DEEPEP_BUFFER_SIZE_MB=0 \
     VLLM_DEEPEP_LOW_LATENCY_ALLOW_NVLINK=1 \
     VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL=1 \
-    vllm serve {{MODEL}} \
+    {{NSYS}} vllm serve {{MODEL}} \
     --kv-cache-dtype fp8 \
     --tensor-parallel-size 1 \
     --pipeline-parallel-size 1 \
@@ -232,10 +234,6 @@ decode0:
     --max-num-seqs 1024 \
     --max-num-batched-tokens 16384 \
     --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","max_cudagraph_capture_size":2048}' \
-    \
-    --disable_custom_all_reduce \
-    --disable_nccl_for_dp_synchronization \
-    \
     --gpu-memory-utilization 0.86 2>&1 | tee decode0.log
 
 #VLLM_MOE_ROUTING_SIMULATION_STRATEGY=uniform_random \
@@ -243,7 +241,7 @@ decode0:
 # VLLM_FORCE_TORCH_ALLREDUCE=1 \
 # VLLM_MOE_DP_CHUNK_SIZE=1024 \
 decode1:
-    VLLM_TORCH_PROFILER_DIR=./profile/ \
+    VLLM_MOE_DP_CHUNK_SIZE=1024 \
     NVIDIA_GDRCOPY=1 \
     NVSHMEM_IB_ENABLE_IBGDA=1 \
     VLLM_SKIP_P2P_CHECK=1 \
@@ -263,7 +261,7 @@ decode1:
     VLLM_DEEPEP_BUFFER_SIZE_MB=0 \
     VLLM_DEEPEP_LOW_LATENCY_ALLOW_NVLINK=1 \
     VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL=1 \
-    vllm serve {{MODEL}} \
+    {{NSYS}} vllm serve {{MODEL}} \
     --kv-cache-dtype fp8 \
     --tensor-parallel-size 1 \
     --pipeline-parallel-size 1 \
@@ -283,10 +281,6 @@ decode1:
     --max-num-seqs 1024 \
     --max-num-batched-tokens 16384 \
     --compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","max_cudagraph_capture_size":2048}' \
-    \
-    --disable_custom_all_reduce \
-    --disable_nccl_for_dp_synchronization \
-    \
     --gpu-memory-utilization 0.86 2>&1 | tee decode1.log
 
 # ------------------------------------------------------------------------------
@@ -434,6 +428,11 @@ eval:
     lm_eval --model local-completions --tasks gsm8k \
         --model_args model={{MODEL}},base_url=http://127.0.0.1:8000/v1/completions,num_concurrent=32 \
         --limit 100
+
+eval-full:
+    just wait
+    lm_eval --model local-completions --tasks gsm8k \
+        --model_args model={{MODEL}},base_url=http://127.0.0.1:8000/v1/completions,num_concurrent=256
 
 # ==============================================================================
 # Profiling
