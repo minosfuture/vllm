@@ -31,9 +31,9 @@
 
 MODEL := "nvidia/DeepSeek-R1-0528-FP4"
 HF_CACHE_HOME := "/data/numa0/ming_hf_cache/"
-DECODE_MASTER := "192.168.5.50"   # Decode cluster master node IP
-NSYS := "nsys launch -t cuda,nvtx --cuda-graph-trace=node"
-#NSYS := ""
+DECODE_MASTER := "192.168.5.82"   # Decode cluster master node IP
+#NSYS := "nsys launch -t cuda,nvtx --cuda-graph-trace=node"
+NSYS := ""
 
 export HF_HOME := HF_CACHE_HOME
 export FLASHINFER_CACHE_DIR := "/data/nfs01/ming/.cache/flashinfer/"
@@ -133,15 +133,16 @@ PREFILL_ARGS := COMMON_ARGS + ''' \
 '''
 
 #--data-parallel-hybrid-lb \
+#--compilation-config '{"cudagraph_mode":"NONE","use_inductor":true}' \
 DECODE_ARGS := COMMON_ARGS + ''' \
 --stream-interval 50 \
 --all2all-backend deepep_low_latency \
---compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","max_cudagraph_capture_size":1024}' \
+--compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","max_cudagraph_capture_size":1024,"use_inductor":true}' \
 --data-parallel-size 8 \
 --data-parallel-size-local 4 \
 --gpu-memory-utilization 0.86 \
 --max-model-len 4096 \
---max-num-batched-tokens 1024 \
+--max-num-batched-tokens 16384 \
 --max-num-seqs 1024 \
 '''
 
