@@ -69,7 +69,7 @@ VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
 VLLM_V1_OUTPUT_PROC_CHUNK_SIZE=2048 \
 VLLM_RANDOMIZE_DP_DUMMY_INPUTS=1 \
 VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
-VLLM_MOE_DP_CHUNK_SIZE=256 \
+VLLM_MOE_DP_CHUNK_SIZE=1024 \
 '''
 
 PREFILL_ENV := COMMON_ENV + ''' \
@@ -136,12 +136,12 @@ PREFILL_ARGS := COMMON_ARGS + ''' \
 DECODE_ARGS := COMMON_ARGS + ''' \
 --stream-interval 50 \
 --all2all-backend deepep_low_latency \
---compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","max_cudagraph_capture_size":2048}' \
+--compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","max_cudagraph_capture_size":1024}' \
 --data-parallel-size 8 \
 --data-parallel-size-local 4 \
 --gpu-memory-utilization 0.86 \
 --max-model-len 4096 \
---max-num-batched-tokens 16384 \
+--max-num-batched-tokens 1024 \
 --max-num-seqs 1024 \
 '''
 
