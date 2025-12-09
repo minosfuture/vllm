@@ -1878,6 +1878,7 @@ class FusedMoE(CustomOp):
             with ctx.dp_metadata.chunked_sizes(
                 self.sp_size, moe_dp_chunk_size_per_rank, chunk_idx
             ):
+                logger.info_once(f"{chunk_start=}, {chunk_end=}, {chunk_start_=}, {num_tokens=}, {max_tokens_across_dispatchers=}, {moe_dp_chunk_size_per_rank=}")
                 process_chunk(
                     chunk_start, chunk_end, skip_result_store=chunk_start_ >= num_tokens
                 )

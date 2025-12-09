@@ -121,13 +121,13 @@ PREFILL_ARGS := COMMON_ARGS + ''' \
 
 DECODE_ARGS := COMMON_ARGS + ''' \
 --all2all-backend deepep_low_latency \
---compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","max_cudagraph_capture_size":2048}' \
+--compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","max_cudagraph_capture_size":1024}' \
 --data-parallel-hybrid-lb \
 --data-parallel-size 8 \
 --data-parallel-size-local 4 \
---gpu-memory-utilization 0.9 \
+--gpu-memory-utilization 0.86 \
 --max-model-len 4096 \
---max-num-batched-tokens 16384 \
+--max-num-batched-tokens 1024 \
 --max-num-seqs 1024 \
 '''
 
@@ -321,6 +321,11 @@ eval:
     lm_eval --model local-completions --tasks gsm8k \
         --model_args model={{MODEL}},base_url=http://127.0.0.1:8000/v1/completions,num_concurrent=32 \
         --limit 100
+
+eval-full:
+    just wait
+    lm_eval --model local-completions --tasks gsm8k \
+        --model_args model={{MODEL}},base_url=http://127.0.0.1:8000/v1/completions,num_concurrent=256
 
 # ==============================================================================
 # Profiling

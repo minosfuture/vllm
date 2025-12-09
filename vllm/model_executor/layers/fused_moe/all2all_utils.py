@@ -160,7 +160,7 @@ def maybe_make_prepare_finalize(
 
         prepare_finalize = DeepEPLLPrepareAndFinalize(
             handle,
-            max_tokens_per_rank=moe.max_num_tokens,
+            max_tokens_per_rank=1024, #moe.max_num_tokens,
             num_dispatchers=all2all_manager.world_size,
             use_fp8_dispatch=use_fp8_dispatch,
             global_to_physical=global_to_physical,

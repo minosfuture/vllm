@@ -274,6 +274,7 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
                 else False
             )
         )
+        #logger.info_once(f"{has_per_token_scales=}, {qc_a1_gscale_or_scale.shape=}")
         if not use_nvfp4:
             assert not has_per_token_scales, (
                 "low_latency kernels doesn't support dispatching per-token scales"
