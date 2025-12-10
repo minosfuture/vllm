@@ -29,10 +29,13 @@
 # Configuration
 # ------------------------------------------------------------------------------
 
-MODEL := "nvidia/DeepSeek-R1-0528-FP4"
+#MODEL := "nvidia/DeepSeek-R1-0528-FP4-v2"
+MODEL := "deepseek-ai/DeepSeek-R1-0528"
 HF_CACHE_HOME := "/data/numa0/ming_hf_cache/"
+PREFILL_MASTER := "192.168.5.82"
 DECODE_MASTER := "192.168.5.82"   # Decode cluster master node IP
 NSYS := ""
+#NSYS := "nsys launch -t cuda,nvtx --cuda-graph-trace=node"
 
 export HF_HOME := HF_CACHE_HOME
 export FLASHINFER_CACHE_DIR := "/data/nfs01/ming/.cache/flashinfer/"
@@ -121,13 +124,14 @@ PREFILL_ARGS := COMMON_ARGS + ''' \
 
 DECODE_ARGS := COMMON_ARGS + ''' \
 --all2all-backend deepep_low_latency \
---compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY","max_cudagraph_capture_size":1024,"use_inductor":false}' \
+--compilation-config '{"cudagraph_mode":"NONE","max_cudagraph_capture_size":1024,"use_inductor":true}' \
 --data-parallel-size 8 \
 --data-parallel-size-local 4 \
 --gpu-memory-utilization 0.86 \
 --max-model-len 4096 \
 --max-num-batched-tokens 16384 \
 --max-num-seqs 1024 \
+--enforce-eager \
 '''
 
 # ==============================================================================
@@ -158,6 +162,83 @@ prefill-off NUMA="0" PORT="8000":
         --offload-num-in-group 1 \
         --offload-prefetch-step 1 \
         2>&1 | tee prefill-off.log
+
+# DeepGEMM + DeepEP HT, DP8EP, fp8
+prefill-baseline DPSR="0" HEADLESS="":
+  VLLM_TORCH_PROFILER_DIR=./profile/ \
+  VLLM_USE_DEEP_GEMM=1 \
+  VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE=1 \
+  vllm serve deepseek-ai/DeepSeek-R1-0528 \
+  --disable-uvicorn-access-log \
+  --enable-expert-parallel \
+  --all2all-backend deepep_high_throughput \
+  --data-parallel-size 8 \
+  --data-parallel-size-local 4 \
+  --data-parallel-start-rank {{DPSR}} \
+  --data-parallel-address {{PREFILL_MASTER}} \
+  {{HEADLESS}}
+
+prefill-flashinfer DPSR="0" HEADLESS="":
+  VLLM_TORCH_PROFILER_DIR=./profile/ \
+  VLLM_USE_DEEP_GEMM=1 \
+  VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE=1 \
+  VLLM_ATTENTION_BACKEND=FLASHINFER_MLA \
+  VLLM_DISABLE_FLASHINFER_PREFILL=0 \
+  VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
+  vllm serve deepseek-ai/DeepSeek-R1-0528 \
+  --disable-uvicorn-access-log \
+  --enable-expert-parallel \
+  --all2all-backend deepep_high_throughput \
+  --data-parallel-size 8 \
+  --data-parallel-size-local 4 \
+  --data-parallel-start-rank {{DPSR}} \
+  --data-parallel-address {{PREFILL_MASTER}} \
+  {{HEADLESS}}
+
+prefill-async-sched DPSR="0" HEADLESS="":
+  VLLM_TORCH_PROFILER_DIR=./profile/ \
+  VLLM_USE_DEEP_GEMM=1 \
+  VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE=1 \
+  VLLM_ATTENTION_BACKEND=FLASHINFER_MLA \
+  VLLM_DISABLE_FLASHINFER_PREFILL=0 \
+  VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
+  vllm serve deepseek-ai/DeepSeek-R1-0528 \
+  --async-scheduling \
+  --disable-uvicorn-access-log \
+  --enable-expert-parallel \
+  --all2all-backend deepep_high_throughput \
+  --data-parallel-size 8 \
+  --data-parallel-size-local 4 \
+  --data-parallel-start-rank {{DPSR}} \
+  --data-parallel-address {{PREFILL_MASTER}} \
+  {{HEADLESS}}
+
+prefill-no-act-chunk DPSR="0" HEADLESS="":
+  CUDA_HOME=/usr/local/cuda-12.9 \
+  CUDA_TOOLKIT_PATH=$CUDA_HOME \
+  CUDA_INCLUDE_DIRS=/usr/local/cuda-12.9/include \
+  CUDA_CUDART_LIBRARY=/usr/local/cuda-12.9/lib64/libcudart.so \
+  LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH \
+  PATH=$CUDA_HOME/bin:$PATH \
+  VLLM_TORCH_PROFILER_DIR=./profile/ \
+  VLLM_USE_DEEP_GEMM=1 \
+  VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE=1 \
+  VLLM_ATTENTION_BACKEND=FLASHINFER_MLA \
+  VLLM_DISABLE_FLASHINFER_PREFILL=0 \
+  VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
+  VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
+  vllm serve deepseek-ai/DeepSeek-R1-0528 \
+  --async-scheduling \
+  --disable-uvicorn-access-log \
+  --enable-expert-parallel \
+  --all2all-backend deepep_high_throughput \
+  --data-parallel-size 8 \
+  --data-parallel-size-local 4 \
+  --data-parallel-start-rank {{DPSR}} \
+  --data-parallel-address {{PREFILL_MASTER}} \
+  --max_num_batched_tokens=32768 \
+  --max_num_seqs=32 \
+  {{HEADLESS}} 2>&1 | tee no-act-chunk.log
 
 # Start lead decode
 decode:
