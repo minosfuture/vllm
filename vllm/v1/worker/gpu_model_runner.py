@@ -35,6 +35,7 @@ from vllm.config import (
     VllmConfig,
     get_layers_from_vllm_config,
     update_config,
+    set_current_vllm_config,
 )
 from vllm.distributed.ec_transfer import get_ec_transfer, has_ec_transfer
 from vllm.distributed.eplb.eplb_state import EplbState
@@ -4044,6 +4045,7 @@ class GPUModelRunner(
                     batch_descriptor=batch_descriptor,
                     ubatch_slices=ubatch_slices,
                 ),
+                set_current_vllm_config(self.vllm_config),
             ):
                 outputs = self.model(
                     input_ids=input_ids,
