@@ -56,7 +56,7 @@ UCX_TLS=all \
 VLLM_ATTENTION_BACKEND=FLASHINFER_MLA \
 VLLM_DISABLE_FLASHINFER_PREFILL=0 \
 VLLM_FORCE_TORCH_ALLREDUCE=1 \
-VLLM_LOGGING_LEVEL=INFO \
+VLLM_LOGGING_LEVEL=DEBUG \
 VLLM_NIXL_ABORT_REQUEST_TIMEOUT=300 \
 VLLM_NIXL_SIDE_CHANNEL_HOST=`hostname -i` \
 VLLM_NIXL_SIDE_CHANNEL_PORT=5700 \
@@ -150,6 +150,9 @@ prefill:
 
 # Start prefill with offloading (2 GPUs)
 # check nvidia-smi topo -m for numa-GPU affinity
+#--offload-group-size 4 \
+#--offload-num-in-group 1 \
+#--offload-prefetch-step 1 \
 prefill-off NUMA="0" PORT="8000":
     {{PREFILL_ENV}} \
     {{NSYS}} \
@@ -160,9 +163,6 @@ prefill-off NUMA="0" PORT="8000":
         --data-parallel-size 2 \
         --enforce-eager \
         --gpu-memory-utilization 0.84 \
-        --offload-group-size 2 \
-        --offload-num-in-group 1 \
-        --offload-prefetch-step 1 \
         2>&1 | tee prefill-off.log
 
 # Start lead decode
