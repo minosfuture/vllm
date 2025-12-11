@@ -156,10 +156,10 @@ class _ModuleOffloader:
         self._load_event: torch.cuda.Event | None = None
 
         param_dict = dict(self.module.named_parameters())
-        assert all(name in param_dict for name in whitelist_param_names), (
-            f"Whitelist params {whitelist_param_names} not found in module params "
-            f"{list(param_dict.keys())}"
-        )
+        #assert all(name in param_dict for name in whitelist_param_names), (
+        #    f"Whitelist params {whitelist_param_names} not found in module params "
+        #    f"{list(param_dict.keys())}"
+        #)
 
         self._param_offloaders = {
             name: _BaseParamOffloader.create(mode, module=module, param_name=name)

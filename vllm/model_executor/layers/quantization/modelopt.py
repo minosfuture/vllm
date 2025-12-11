@@ -1438,6 +1438,7 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
             # Clean up weights that won't be used by TRT-LLM
             del layer.w2_weight
             del layer.w2_weight_scale
+            layer.w13_weight = Parameter(layer.w13_weight.to(device="meta"), requires_grad=False)
             del layer.w13_weight
             del layer.w13_weight_scale
             import gc

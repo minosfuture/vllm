@@ -1288,6 +1288,8 @@ class DeepseekV2Model(nn.Module):
                         # Core MoE expert weights
                         "w13_weight",
                         "w2_weight",
+                        #"gemm1_weights_fp4_shuffled",
+                        #"gemm2_weights_fp4_shuffled",
                         # NVFP4 quantization scales (if present)
                         *(
                             ["w13_blockscale_swizzled", "w2_blockscale_swizzled"]
