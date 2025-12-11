@@ -1318,6 +1318,7 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
         # GEMM 1 processing
         gemm1_weight = layer.w13_weight.data
         gemm1_weight_scale = layer.w13_weight_scale.data
+        logger.debug(f"{gemm1_weight.device=}, {gemm1_weight_scale.device=}")
 
         if (
             self.allow_flashinfer
@@ -1330,6 +1331,7 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
             gemm1_weight, gemm1_weight_scale = reorder_w1w3_to_w3w1(
                 gemm1_weight, gemm1_weight_scale, dim=-2
             )
+        logger.debug(f"{gemm1_weight.device=}, {gemm1_weight_scale.device=}")
 
         layer.w13_weight = Parameter(gemm1_weight, requires_grad=False)
         layer.w13_weight_scale = Parameter(gemm1_weight_scale, requires_grad=False)
@@ -1410,12 +1412,10 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
             )
             logger.debug_once("Finished shuffling weights for TRT-LLM MOE")
 
-            layer.gemm1_weights_fp4_shuffled = Parameter(
+            layer.w13_weight = Parameter(
                 gemm1_weights_fp4_shuffled, requires_grad=False
             )
-            layer.gemm2_weights_fp4_shuffled = Parameter(
-                gemm2_weights_fp4_shuffled, requires_grad=False
-            )
+            layer.w2_weight = Parameter(gemm2_weights_fp4_shuffled, requires_grad=False)
             layer.gemm1_scales_fp4_shuffled = Parameter(
                 gemm1_scales_fp4_shuffled, requires_grad=False
             )
@@ -1430,18 +1430,19 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
             )
 
             import sys
+
             logger.debug(
                 f"remove {layer=} {layer.w13_weight.shape=}, {layer.w2_weight.shape=}, {sys.getrefcount(layer.w13_weight)=}"
             )
             import gc
-            logger.debug(gc.get_referrers(layer.w13_weight))
+
+            # logger.debug(gc.get_referrers(layer.w13_weight))
             # Clean up weights that won't be used by TRT-LLM
-            del layer.w2_weight
+            # del layer.w2_weight
             del layer.w2_weight_scale
-            layer.w13_weight = Parameter(layer.w13_weight.to(device="meta"), requires_grad=False)
-            del layer.w13_weight
+            # layer.w13_weight = Parameter(layer.w13_weight.to(device="meta"), requires_grad=False)
+            # del layer.w13_weight
             del layer.w13_weight_scale
-            import gc
 
             gc.collect()
             torch.cuda.empty_cache()  # Optional: releases cached memory back to the GPU

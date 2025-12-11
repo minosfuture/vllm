@@ -132,6 +132,7 @@ def device_loading_context(module: torch.nn.Module, target_device: torch.device)
     # Store original device states and move parameters to GPU if they're on CPU
     for name, p in module.named_parameters():
         if p.device.type == "cpu":
+            logger.info(f"move tensor {name} to {target_device}")
             original_device_states[name] = p.device
             p.data = p.data.to(target_device)
         # Parameters already on target device are not touched
@@ -146,6 +147,7 @@ def device_loading_context(module: torch.nn.Module, target_device: torch.device)
             if name in original_device_states:
                 original_device: torch.device = original_device_states[name]
                 if original_device.type == "cpu":
+                    logger.info(f"move tensor {name} back to cpu, from {p.data.device}")
                     # `torch.empty_like` does not support `pin_memory` argument
                     cpu_data = torch.empty_strided(
                         size=p.data.size(),

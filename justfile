@@ -30,20 +30,20 @@
 # ------------------------------------------------------------------------------
 
 MODEL := "nvidia/DeepSeek-R1-0528-FP4-v2"
-HF_CACHE_HOME := "/data/numa0/ming_hf_cache/"
+HF_CACHE_HOME := "/home/yming/.cache/huggingface/"
 DECODE_MASTER := "192.168.5.50"   # Decode cluster master node IP
 #NSYS := "nsys launch -t cuda,nvtx --cuda-graph-trace=node"
 NSYS := ""
 
 export HF_HOME := HF_CACHE_HOME
-export FLASHINFER_CACHE_DIR := "/data/nfs01/ming/.cache/flashinfer/"
+export FLASHINFER_CACHE_DIR := "/home/yming/.cache/flashinfer/"
 
 # ------------------------------------------------------------------------------
 # vLLM Environment Variables
 # ------------------------------------------------------------------------------
 
 COMMON_ENV := '''
-VLLM_MEMORY_SNAPSHOT_DIR=/data/nfs01/ming/mem_profile \
+VLLM_MEMORY_SNAPSHOT_DIR=/home/yming/mem_profile \
 VLLM_MEMORY_SNAPSHOT_MAX_ENTRIES=2000000 \
 CUDA_HOME=/usr/local/cuda \
 LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
@@ -150,9 +150,6 @@ prefill:
 
 # Start prefill with offloading (2 GPUs)
 # check nvidia-smi topo -m for numa-GPU affinity
-#--offload-group-size 4 \
-#--offload-num-in-group 1 \
-#--offload-prefetch-step 1 \
 prefill-off NUMA="0" PORT="8000":
     {{PREFILL_ENV}} \
     {{NSYS}} \
@@ -163,6 +160,9 @@ prefill-off NUMA="0" PORT="8000":
         --data-parallel-size 2 \
         --enforce-eager \
         --gpu-memory-utilization 0.84 \
+        --offload-group-size 2 \
+        --offload-num-in-group 1 \
+        --offload-prefetch-step 1 \
         2>&1 | tee prefill-off.log
 
 # Start lead decode

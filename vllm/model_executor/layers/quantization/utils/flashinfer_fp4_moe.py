@@ -310,7 +310,7 @@ def flashinfer_trtllm_fp4_moe(
         hidden_states_scale=hidden_states_scale_linear_fp4.view(
             torch.float8_e4m3fn
         ).flatten(),
-        gemm1_weights=layer.gemm1_weights_fp4_shuffled.data,
+        gemm1_weights=layer.w13_weight.data,
         gemm1_weights_scale=layer.gemm1_scales_fp4_shuffled.data.view(
             torch.float8_e4m3fn
         ),
@@ -318,7 +318,7 @@ def flashinfer_trtllm_fp4_moe(
         gemm1_alpha=None,
         gemm1_beta=None,
         gemm1_clamp_limit=None,
-        gemm2_weights=layer.gemm2_weights_fp4_shuffled.data,
+        gemm2_weights=layer.w2_weight.data,
         gemm2_weights_scale=layer.gemm2_scales_fp4_shuffled.data.view(
             torch.float8_e4m3fn
         ),
