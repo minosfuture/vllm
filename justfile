@@ -29,9 +29,11 @@ VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
 VLLM_USE_NCCL_SYMM_MEM=1 '''
 
 
+#VLLM_MOE_ROUTING_SIMULATION_STRATEGY=uniform_random \
 PREFILL_VLLM_ENV := SYSTEM_ENV + COMMON_VLLM_ENV + '''\
-VLLM_FLASHINFER_MOE_BACKEND=latency \
-VLLM_MOE_ROUTING_SIMULATION_STRATEGY=uniform_random \
+VLLM_FLASHINFER_MOE_BACKEND=throughput \
+VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
+VLLM_ENABLE_MOE_DP_CHUNK=0 \
 '''
 
 PREFILL_PD_VLLM_ENV := PREFILL_VLLM_ENV + PD_VLLM_ENV
@@ -54,11 +56,9 @@ COMMON_VLLM_ARGS := '''
 --max-model-len 4096 \
 --data-parallel-size-local 4 \
 --disable-uvicorn-access-log \
---port 8010 \
+--port 8000 \
 --async-scheduling '''
 
-#--enable-eplb \
-#--eplb-config '{"window_size":"100", "step_interval":"500", "num_redundant_experts":"32", "log_balancedness":"False"}' \
 PREFILL_VLLM_ARGS := COMMON_VLLM_ARGS + '''\
 --no-enable-prefix-caching \
 --swap-space 16 \
@@ -69,6 +69,8 @@ PREFILL_VLLM_ARGS := COMMON_VLLM_ARGS + '''\
 --compilation_config.pass_config.enable_attn_fusion true \
 --compilation_config.pass_config.enable_noop true \
 --compilation_config.custom_ops+=+quant_fp8,+rms_norm \
+--enable-eplb \
+--eplb-config '{"window_size":"100", "step_interval":"500", "num_redundant_experts":"32", "log_balancedness":"False"}' \
 '''
 
 PREFILL_PD_VLLM_ARGS := PREFILL_VLLM_ARGS + PD_VLLM_ARGS
@@ -191,10 +193,10 @@ bench-prefill BS="1024" RATE="inf" ISL="2048" OSL="1" PORT="8000":
 bench-decode BS="4096" RATE="inf" ISL="2" OSL="1024" PORT="8000" COMMON_PREFIX="2047":
   just bench {{BS}} {{RATE}} {{ISL}} {{OSL}} {{PORT}} {{COMMON_PREFIX}}
 
-eval:
-  just wait
+eval PORT="8000":
+  just wait {{PORT}}
   lm_eval --model local-completions --tasks gsm8k \
-    --model_args model={{MODEL}},base_url=http://127.0.0.1:8000/v1/completions,num_concurrent=32 \
+    --model_args model={{MODEL}},base_url=http://127.0.0.1:{{PORT}}/v1/completions,num_concurrent=32 \
     --limit 100
 
 eval-full PORT="8000":
@@ -239,7 +241,7 @@ quickrun PORT="8000":
         -H "Content-Type: application/json" \
         -d '{"messages": [{"role": "user", "content": "Hello!"}]}'
 
-profile URL="8010" DUR="1":
+profile URL="8000" DUR="1":
     curl -X POST "http://localhost:{{URL}}/start_profile" && \
         sleep {{DUR}} && \
         curl -X POST "http://localhost:{{URL}}/stop_profile"
