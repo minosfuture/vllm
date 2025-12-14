@@ -30,7 +30,8 @@
 # ------------------------------------------------------------------------------
 
 #MODEL := "nvidia/DeepSeek-R1-0528-FP4-v2"
-MODEL := "deepseek-ai/DeepSeek-R1-0528"
+MODEL := "nvidia/DeepSeek-R1-0528-FP4"
+#MODEL := "deepseek-ai/DeepSeek-R1-0528"
 HF_CACHE_HOME := "/data/numa0/ming_hf_cache/"
 PREFILL_MASTER := "192.168.5.82"
 DECODE_MASTER := "192.168.5.82"   # Decode cluster master node IP
@@ -219,12 +220,17 @@ prefill-async-sched DPSR="0" HEADLESS="":
   --data-parallel-address {{PREFILL_MASTER}} \
   {{HEADLESS}}
 
-prefill-misc DPSR="0" HEADLESS="":
-  VLLM_RANDOMIZE_DP_DUMMY_INPUTS=1 \
-  NVSHMEM_IB_ENABLE_IBGDA=1 \
-  VLLM_ENABLE_MOE_DP_CHUNK=0 \
+# only uniform_random is needed to reach higher number
+#VLLM_RANDOMIZE_DP_DUMMY_INPUTS=1 \
+#NVSHMEM_IB_ENABLE_IBGDA=1 \
+#VLLM_ENABLE_MOE_DP_CHUNK=0 \
+#VLLM_FORCE_TORCH_ALLREDUCE=1 \
+#VLLM_USE_FLASHINFER_SAMPLER=1 \
+#VLLM_NIXL_SIDE_CHANNEL_HOST=`hostname -i` \
+#VLLM_NIXL_SIDE_CHANNEL_PORT=5600 \
+#--kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
+prefill-uniform DPSR="0" HEADLESS="":
   VLLM_MOE_ROUTING_SIMULATION_STRATEGY=uniform_random \
-  \
   VLLM_TORCH_PROFILER_DIR=./profile/ \
   VLLM_USE_DEEP_GEMM=1 \
   VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE=1 \
@@ -266,7 +272,7 @@ prefill-dbo DPSR="0" HEADLESS="":
   {{HEADLESS}} 2>&1 | tee no-act-chunk.log
 
 # IMA
-prefill-no-act-chunk DPSR="0" HEADLESS="":
+prefill-fp8-no-act-chunk DPSR="0" HEADLESS="":
   VLLM_TORCH_PROFILER_DIR=./profile/ \
   VLLM_USE_DEEP_GEMM=1 \
   VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE=1 \
@@ -274,6 +280,7 @@ prefill-no-act-chunk DPSR="0" HEADLESS="":
   VLLM_DISABLE_FLASHINFER_PREFILL=0 \
   VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
   VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
+  VLLM_RANDOMIZE_DP_DUMMY_INPUTS=1 \
   vllm serve deepseek-ai/DeepSeek-R1-0528 \
   --enforce-eager \
   --async-scheduling \
@@ -293,51 +300,92 @@ prefill-no-act-chunk DPSR="0" HEADLESS="":
 #--compilation_config.pass_config.enable_attn_fusion true \
 #--compilation_config.pass_config.enable_fi_allreduce_fusion true \
 #--compilation_config.pass_config.enable_noop true \
-prefill-fp4:
-  PATH=/usr/local/cuda/bin:$PATH \
-  UCX_TLS=all \
+#  PATH=/usr/local/cuda/bin:$PATH \
+#  UCX_TLS=all \
+#  VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
+#  VLLM_ENABLE_MOE_DP_CHUNK=0 \
+#  VLLM_FLASHINFER_ALLREDUCE_FUSION_THRESHOLDS_MB='{"2":32,"4":32,"8":8}' \
+#  VLLM_FORCE_TORCH_ALLREDUCE=1 \
+#  VLLM_MOE_DP_CHUNK_SIZE=1024 \
+#  VLLM_LOGGING_LEVEL=INFO \
+#  VLLM_NIXL_ABORT_REQUEST_TIMEOUT=300 \
+#  VLLM_NIXL_SIDE_CHANNEL_HOST=`hostname -i` \
+#  VLLM_NIXL_SIDE_CHANNEL_PORT=5700 \
+#  VLLM_RANDOMIZE_DP_DUMMY_INPUTS=1 \
+#  VLLM_USE_FLASHINFER_MOE_FP8=1 \
+#  VLLM_USE_NCCL_SYMM_MEM=1 \
+#  VLLM_V1_OUTPUT_PROC_CHUNK_SIZE=2048 \
+#  --disable_custom_all_reduce \
+#  --disable_nccl_for_dp_synchronization \
+#  --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
+#  --kv-cache-dtype fp8 \
+#  --all2all-backend allgather_reducescatter \
+#  --gpu-memory-utilization 0.85 \
+#  --max-model-len 4096 \
+#  --no-enable-prefix-caching \
+#  --swap-space 16 \
+prefill-no-moe-dp-chunk:
+  VLLM_ENABLE_MOE_DP_CHUNK=0 \
   VLLM_ATTENTION_BACKEND=FLASHINFER_MLA \
+  VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE=1 \
   VLLM_DISABLE_FLASHINFER_PREFILL=0 \
-  VLLM_FORCE_TORCH_ALLREDUCE=1 \
-  VLLM_LOGGING_LEVEL=INFO \
-  VLLM_NIXL_ABORT_REQUEST_TIMEOUT=300 \
-  VLLM_NIXL_SIDE_CHANNEL_HOST=`hostname -i` \
-  VLLM_NIXL_SIDE_CHANNEL_PORT=5700 \
+  VLLM_FLASHINFER_MOE_BACKEND=throughput \
   VLLM_TORCH_PROFILER_DIR=./profile/ \
   VLLM_USE_DEEP_GEMM=0 \
   VLLM_USE_FLASHINFER_MOE_FP4=1 \
-  VLLM_USE_FLASHINFER_MOE_FP8=1 \
   VLLM_USE_FLASHINFER_SAMPLER=1 \
   VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
-  VLLM_V1_OUTPUT_PROC_CHUNK_SIZE=2048 \
-  VLLM_RANDOMIZE_DP_DUMMY_INPUTS=1 \
-  VLLM_MOE_DP_CHUNK_SIZE=1024 \
-  \
-  VLLM_ENABLE_MOE_DP_CHUNK=0 \
-  VLLM_USE_NCCL_SYMM_MEM=1 \
-  VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
-  VLLM_FLASHINFER_ALLREDUCE_FUSION_THRESHOLDS_MB='{"2":32,"4":32,"8":8}' \
-  VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE=1 \
-  VLLM_FLASHINFER_MOE_BACKEND=throughput \
-  vllm serve deepseek-ai/DeepSeek-R1-0528 --async-scheduling \
-  --disable_custom_all_reduce \
+  vllm serve nvidia/DeepSeek-R1-0528-FP4 \
+  --async-scheduling \
   --disable-uvicorn-access-log \
-  --disable_nccl_for_dp_synchronization \
   --enable-expert-parallel \
-  --kv-cache-dtype fp8 \
-  --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both"}' \
-  --tensor-parallel-size 1 \
-  --trust-remote-code \
-  \
-  --all2all-backend allgather_reducescatter \
-  --gpu-memory-utilization 0.85 \
-  --max-model-len 4096 \
+  --data-parallel-size 4 \
   --max-num-batched-tokens 32768 \
-  --max-num-seqs 1024 \
-  --no-enable-prefix-caching \
-  --swap-space 16 \
-  --trust-remote-code \
-  --data-parallel-size 4 2>&1 | tee prefill.log
+  --max-num-seqs 16 \
+  2>&1 | tee prefill.log
+
+prefill-no-act-chunk:
+  VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
+  VLLM_ENABLE_MOE_DP_CHUNK=0 \
+  VLLM_ATTENTION_BACKEND=FLASHINFER_MLA \
+  VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE=1 \
+  VLLM_DISABLE_FLASHINFER_PREFILL=0 \
+  VLLM_FLASHINFER_MOE_BACKEND=throughput \
+  VLLM_TORCH_PROFILER_DIR=./profile/ \
+  VLLM_USE_DEEP_GEMM=0 \
+  VLLM_USE_FLASHINFER_MOE_FP4=1 \
+  VLLM_USE_FLASHINFER_SAMPLER=1 \
+  VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
+  vllm serve nvidia/DeepSeek-R1-0528-FP4 \
+  --async-scheduling \
+  --disable-uvicorn-access-log \
+  --enable-expert-parallel \
+  --data-parallel-size 4 \
+  --max-model-len 4096 \
+  --gpu-memory-utilization 0.85 \
+  --max-num-batched-tokens 32768 \
+  --max-num-seqs 16 \
+  2>&1 | tee prefill.log
+
+prefill-fp4:
+  VLLM_ATTENTION_BACKEND=FLASHINFER_MLA \
+  VLLM_DEEPEP_HIGH_THROUGHPUT_FORCE_INTRA_NODE=1 \
+  VLLM_DISABLE_FLASHINFER_PREFILL=0 \
+  VLLM_FLASHINFER_MOE_BACKEND=throughput \
+  VLLM_TORCH_PROFILER_DIR=./profile/ \
+  VLLM_USE_DEEP_GEMM=0 \
+  VLLM_USE_FLASHINFER_MOE_FP4=1 \
+  VLLM_USE_FLASHINFER_SAMPLER=1 \
+  VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
+  vllm serve nvidia/DeepSeek-R1-0528-FP4 \
+  --async-scheduling \
+  --disable-uvicorn-access-log \
+  --enable-expert-parallel \
+  --data-parallel-size 4 \
+  --max-num-batched-tokens 32768 \
+  --max-num-seqs 16 \
+  2>&1 | tee prefill.log
+
 # Start lead decode
 decode:
     {{DECODE_ENV}} vllm serve {{MODEL}} \
