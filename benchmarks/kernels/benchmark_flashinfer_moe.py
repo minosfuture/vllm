@@ -10,13 +10,21 @@ Extensible to support additional backends and quantization types.
 
 import csv
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+
+# Suppress vLLM scheduler logs during benchmark (must be before vllm imports)
+logging.getLogger("vllm.config.scheduler").setLevel(logging.WARNING)
 
 import torch
 
 from vllm import _custom_ops as ops
-from vllm.config import ParallelConfig, VllmConfig, set_current_vllm_config
+from vllm.config import (
+    ParallelConfig,
+    VllmConfig,
+    set_current_vllm_config,
+)
 from vllm.model_executor.layers.fused_moe.config import (
     fp8_w8a8_moe_quant_config,
     nvfp4_moe_quant_config,
@@ -34,6 +42,11 @@ from vllm.v1.worker.workspace import init_workspace_manager
 # Constants
 FLOAT4_E2M1_MAX = scalar_types.float4_e2m1f.max()
 FLOAT8_E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max
+
+# Create a shared VllmConfig for benchmarking (created once to avoid log spam)
+_BENCHMARK_VLLM_CONFIG = VllmConfig(
+    parallel_config=ParallelConfig(pipeline_parallel_size=1),
+)
 
 
 @dataclass
@@ -329,9 +342,7 @@ def benchmark_cutlass_nvfp4(
     )
 
     def run_kernel():
-        with set_current_vllm_config(
-            VllmConfig(parallel_config=ParallelConfig(pipeline_parallel_size=1))
-        ):
+        with set_current_vllm_config(_BENCHMARK_VLLM_CONFIG):
             return cutlass_moe_fp4(
                 a=a,
                 w1_fp4=weights["w1_fp4"],
@@ -389,9 +400,7 @@ def benchmark_triton_fp8(
     )
 
     def run_kernel():
-        with set_current_vllm_config(
-            VllmConfig(parallel_config=ParallelConfig(pipeline_parallel_size=1))
-        ):
+        with set_current_vllm_config(_BENCHMARK_VLLM_CONFIG):
             return fused_experts(
                 a,
                 weights["w1_fp8"],
@@ -624,6 +633,186 @@ def save_results_json(results: list[BenchmarkResult], filepath: str):
     print(f"Results saved to: {filepath}")
 
 
+def generate_figures(
+    results: list[BenchmarkResult],
+    output_dir: str,
+    device_name: str,
+):
+    """Generate scaling figures for each backend and phase."""
+    import os
+
+    import matplotlib.pyplot as plt
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Group results by backend and phase
+    from collections import defaultdict
+
+    grouped: dict[tuple[str, str], list[BenchmarkResult]] = defaultdict(list)
+    for r in results:
+        grouped[(r.backend, r.phase)].append(r)
+
+    # Color palette for different tokens_per_seq (seq_lens)
+    colors = plt.cm.viridis([0.2, 0.5, 0.8, 0.95])
+
+    for (backend, phase), phase_results in grouped.items():
+        if not phase_results:
+            continue
+
+        # Create figure with two subplots: latency and throughput
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+        if phase == "decode":
+            # For decode: x-axis is num_seqs (tokens_per_seq = 1)
+            data = sorted(phase_results, key=lambda x: x.num_seqs)
+
+            num_seqs = [r.num_seqs for r in data]
+            latencies = [r.latency_us for r in data]
+            throughputs = [r.throughput_tokens_s / 1000 for r in data]  # K tok/s
+
+            axes[0].plot(num_seqs, latencies, "o-", color=colors[0], linewidth=2)
+            axes[1].plot(num_seqs, throughputs, "o-", color=colors[0], linewidth=2)
+
+            axes[0].set_xlabel("Number of Sequences (Batch Size)", fontsize=12)
+            axes[1].set_xlabel("Number of Sequences (Batch Size)", fontsize=12)
+
+        else:  # prefill
+            # For prefill: x-axis is total_tokens, different lines for tokens_per_seq
+            tokens_per_seqs = sorted(set(r.tokens_per_seq for r in phase_results))
+
+            for idx, tps in enumerate(tokens_per_seqs):
+                data = [r for r in phase_results if r.tokens_per_seq == tps]
+                data.sort(key=lambda x: x.total_tokens)
+
+                total_tokens = [r.total_tokens for r in data]
+                latencies = [r.latency_us for r in data]
+                throughputs = [r.throughput_tokens_s / 1e6 for r in data]  # M tok/s
+
+                color = colors[idx % len(colors)]
+                label = f"seq_len={tps}"
+
+                axes[0].plot(
+                    total_tokens, latencies, "o-", color=color, label=label, linewidth=2
+                )
+                axes[1].plot(
+                    total_tokens,
+                    throughputs,
+                    "o-",
+                    color=color,
+                    label=label,
+                    linewidth=2,
+                )
+
+            axes[0].set_xlabel("Total Tokens", fontsize=12)
+            axes[1].set_xlabel("Total Tokens", fontsize=12)
+            axes[0].legend(loc="best", fontsize=10)
+            axes[1].legend(loc="best", fontsize=10)
+
+        # Configure latency subplot
+        axes[0].set_ylabel("Latency (μs)", fontsize=12)
+        axes[0].set_title(f"{backend} - Latency vs Batch Size", fontsize=14)
+        axes[0].set_xscale("log", base=2)
+        axes[0].grid(True, alpha=0.3)
+
+        # Configure throughput subplot
+        throughput_unit = "K tok/s" if phase == "decode" else "M tok/s"
+        axes[1].set_ylabel(f"Throughput ({throughput_unit})", fontsize=12)
+        axes[1].set_title(f"{backend} - Throughput vs Batch Size", fontsize=14)
+        axes[1].set_xscale("log", base=2)
+        axes[1].grid(True, alpha=0.3)
+
+        # Add overall title
+        fig.suptitle(
+            f"MoE {phase.capitalize()} Benchmark - {backend}\n"
+            f"Device: {device_name} | Model: DeepSeek-R1 (256 experts, top-8)",
+            fontsize=14,
+            fontweight="bold",
+        )
+        plt.tight_layout()
+
+        # Save figure
+        filename = f"moe_{backend}_{phase}.png"
+        filepath = os.path.join(output_dir, filename)
+        plt.savefig(filepath, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Figure saved to: {filepath}")
+
+    # Generate combined comparison figure if multiple backends
+    backends_by_phase: dict[str, list[str]] = defaultdict(list)
+    for backend, phase in grouped:
+        backends_by_phase[phase].append(backend)
+
+    for phase, backends in backends_by_phase.items():
+        if len(backends) < 2:
+            continue
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+        for idx, backend in enumerate(sorted(backends)):
+            phase_results = grouped[(backend, phase)]
+            if not phase_results:
+                continue
+
+            if phase == "decode":
+                data = sorted(phase_results, key=lambda x: x.num_seqs)
+                x_values = [r.num_seqs for r in data]
+                throughputs = [r.throughput_tokens_s / 1000 for r in data]
+            else:
+                # Use the first tokens_per_seq for comparison
+                tokens_per_seqs = sorted(set(r.tokens_per_seq for r in phase_results))
+                if not tokens_per_seqs:
+                    continue
+                target_tps = tokens_per_seqs[0]
+
+                data = [r for r in phase_results if r.tokens_per_seq == target_tps]
+                data.sort(key=lambda x: x.total_tokens)
+                x_values = [r.total_tokens for r in data]
+                throughputs = [r.throughput_tokens_s / 1e6 for r in data]
+
+            latencies = [r.latency_us for r in data]
+
+            color = colors[idx % len(colors)]
+            axes[0].plot(
+                x_values, latencies, "o-", color=color, label=backend, linewidth=2
+            )
+            axes[1].plot(
+                x_values, throughputs, "o-", color=color, label=backend, linewidth=2
+            )
+
+        x_label = "Number of Sequences" if phase == "decode" else "Total Tokens"
+        axes[0].set_xlabel(x_label, fontsize=12)
+        axes[0].set_ylabel("Latency (μs)", fontsize=12)
+        axes[0].set_title(f"Backend Comparison - Latency ({phase})", fontsize=14)
+        axes[0].set_xscale("log", base=2)
+        axes[0].grid(True, alpha=0.3)
+        axes[0].legend(loc="best", fontsize=10)
+
+        throughput_unit = "K tok/s" if phase == "decode" else "M tok/s"
+        axes[1].set_xlabel(x_label, fontsize=12)
+        axes[1].set_ylabel(f"Throughput ({throughput_unit})", fontsize=12)
+        axes[1].set_title(f"Backend Comparison - Throughput ({phase})", fontsize=14)
+        axes[1].set_xscale("log", base=2)
+        axes[1].grid(True, alpha=0.3)
+        axes[1].legend(loc="best", fontsize=10)
+
+        extra_info = ""
+        if phase == "prefill":
+            extra_info = f" | seq_len={target_tps}"
+        fig.suptitle(
+            f"MoE {phase.capitalize()} Backend Comparison\n"
+            f"Device: {device_name}{extra_info}",
+            fontsize=14,
+            fontweight="bold",
+        )
+        plt.tight_layout()
+
+        filename = f"moe_comparison_{phase}.png"
+        filepath = os.path.join(output_dir, filename)
+        plt.savefig(filepath, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Figure saved to: {filepath}")
+
+
 def main():
     parser = FlexibleArgumentParser(
         description="Benchmark FlashInfer MoE backends (NVFP4 focus)"
@@ -704,6 +893,12 @@ def main():
         type=str,
         default=None,
         help="Output JSON file path",
+    )
+    parser.add_argument(
+        "--output-figures",
+        type=str,
+        default=None,
+        help="Output directory for figures (generates PNG files)",
     )
     parser.add_argument(
         "--decode-only",
@@ -846,6 +1041,10 @@ def main():
             save_results_csv(results, args.output_csv)
         if args.output_json:
             save_results_json(results, args.output_json)
+        if args.output_figures:
+            generate_figures(
+                results, args.output_figures, torch.cuda.get_device_name(0)
+            )
 
 
 if __name__ == "__main__":
