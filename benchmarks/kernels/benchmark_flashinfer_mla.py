@@ -698,6 +698,7 @@ def generate_figures(
         axes[0].set_ylabel("Latency (μs)", fontsize=12)
         axes[0].set_title(f"{backend} - Latency vs Batch Size", fontsize=14)
         axes[0].set_xscale("log", base=2)
+        axes[0].set_ylim(bottom=0)
         axes[0].grid(True, alpha=0.3)
         axes[0].legend(loc="best", fontsize=10)
 
@@ -706,6 +707,7 @@ def generate_figures(
         axes[1].set_ylabel(f"Throughput ({throughput_unit})", fontsize=12)
         axes[1].set_title(f"{backend} - Throughput vs Batch Size", fontsize=14)
         axes[1].set_xscale("log", base=2)
+        axes[1].set_ylim(bottom=0)
         axes[1].grid(True, alpha=0.3)
         axes[1].legend(loc="best", fontsize=10)
 
@@ -772,6 +774,7 @@ def generate_figures(
         axes[0].set_ylabel("Latency (μs)", fontsize=12)
         axes[0].set_title(f"Backend Comparison - Latency ({phase})", fontsize=14)
         axes[0].set_xscale("log", base=2)
+        axes[0].set_ylim(bottom=0)
         axes[0].grid(True, alpha=0.3)
         axes[0].legend(loc="best", fontsize=10)
 
@@ -780,6 +783,7 @@ def generate_figures(
         axes[1].set_ylabel(f"Throughput ({throughput_unit})", fontsize=12)
         axes[1].set_title(f"Backend Comparison - Throughput ({phase})", fontsize=14)
         axes[1].set_xscale("log", base=2)
+        axes[1].set_ylim(bottom=0)
         axes[1].grid(True, alpha=0.3)
         axes[1].legend(loc="best", fontsize=10)
 
