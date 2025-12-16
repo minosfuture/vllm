@@ -34,6 +34,7 @@ from vllm.model_executor.layers.quantization.utils.flashinfer_fp4_moe import (
 from vllm.platforms import current_platform
 from vllm.scalar_type import scalar_types
 from vllm.utils.argparse_utils import FlexibleArgumentParser
+from vllm.utils.flashinfer import flashinfer_cutlass_fused_moe
 from vllm.v1.worker.workspace import init_workspace_manager
 
 # Suppress vLLM scheduler logs during benchmark (after imports)
@@ -227,7 +228,7 @@ def create_fp8_weights(
     }
 
 
-def create_trtllm_nvfp4_weights(
+def create_flashinfer_trtllm_nvfp4_weights(
     num_experts: int,
     hidden_size: int,
     intermediate_size: int,
@@ -315,8 +316,8 @@ def create_trtllm_nvfp4_weights(
     }
 
 
-@register_backend("cutlass_nvfp4")
-def benchmark_cutlass_nvfp4(
+@register_backend("cutlass_moe_fp4")
+def benchmark_cutlass_moe_fp4(
     config: MoEConfig,
     num_tokens: int,
     weights: dict,
@@ -355,6 +356,77 @@ def benchmark_cutlass_nvfp4(
                 e=config.num_experts,
                 quant_config=quant_config,
             )
+
+    # Warmup
+    for _ in range(num_warmup):
+        run_kernel()
+    torch.cuda.synchronize()
+
+    # Benchmark
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+
+    start_event.record()
+    for _ in range(num_iters):
+        run_kernel()
+    end_event.record()
+    end_event.synchronize()
+
+    latency_ms = start_event.elapsed_time(end_event) / num_iters
+    return latency_ms * 1000  # Return in microseconds
+
+
+@register_backend("flashinfer_cutlass_nvfp4")
+def benchmark_flashinfer_cutlass_nvfp4(
+    config: MoEConfig,
+    num_tokens: int,
+    weights: dict,
+    num_warmup: int = 10,
+    num_iters: int = 100,
+) -> float:
+    """Benchmark FlashInfer CUTLASS NVFP4 MoE kernel (direct kernel call)."""
+    from flashinfer.fused_moe.core import ActivationType
+
+    device = "cuda"
+    a = torch.randn((num_tokens, config.hidden_size), device=device, dtype=config.dtype)
+    score = torch.randn(
+        (num_tokens, config.num_experts), device=device, dtype=config.dtype
+    )
+
+    topk_weights, topk_ids, _ = fused_topk(a, score, config.topk, renormalize=False)
+
+    # Prepare quant_scales for NVFP4:
+    # [a1_gscale, w1_blockscale, g1_alphas, a2_gscale, w2_blockscale, g2_alphas]
+    quant_scales = [
+        weights["a1_gs"],  # gemm1 activation global scale
+        weights["w1_blockscale"].view(torch.int32),  # gemm1 weights block scales
+        weights["w1_gs"],  # gemm1 dequant scale (g1_alphas)
+        weights["a2_gs"],  # gemm2 activation global scale
+        weights["w2_blockscale"].view(torch.int32),  # gemm2 weights block scales
+        weights["w2_gs"],  # gemm2 dequant scale (g2_alphas)
+    ]
+
+    # FlashInfer API requires weight to be long for nvfp4
+    fc1_weights = weights["w1_fp4"].view(torch.long)
+    fc2_weights = weights["w2_fp4"].view(torch.long)
+
+    # Pre-allocate output tensor
+    output = torch.empty(
+        (num_tokens, config.hidden_size), device=device, dtype=config.dtype
+    )
+
+    def run_kernel():
+        return flashinfer_cutlass_fused_moe(
+            input=a,
+            token_selected_experts=topk_ids.to(torch.int),
+            token_final_scales=topk_weights,
+            fc1_expert_weights=fc1_weights,
+            fc2_expert_weights=fc2_weights,
+            output_dtype=config.dtype,
+            quant_scales=quant_scales,
+            output=output,
+            activation_type=ActivationType.Swiglu,
+        )
 
     # Warmup
     for _ in range(num_warmup):
@@ -429,8 +501,8 @@ def benchmark_triton_fp8(
     return latency_ms * 1000  # Return in microseconds
 
 
-@register_backend("trtllm_nvfp4")
-def benchmark_trtllm_nvfp4(
+@register_backend("flashinfer_trtllm_nvfp4")
+def benchmark_flashinfer_trtllm_nvfp4(
     config: MoEConfig,
     num_tokens: int,
     weights: dict,
@@ -959,9 +1031,9 @@ def main():
 
     # Create TRT-LLM NVFP4 weights if needed
     trtllm_weights = None
-    if "trtllm_nvfp4" in args.backends:
+    if "flashinfer_trtllm_nvfp4" in args.backends:
         print("Creating TRT-LLM NVFP4 weights (with shuffling)...")
-        trtllm_weights = create_trtllm_nvfp4_weights(
+        trtllm_weights = create_flashinfer_trtllm_nvfp4_weights(
             config.num_experts,
             config.hidden_size,
             config.intermediate_size,
@@ -970,7 +1042,7 @@ def main():
 
     def get_weights_for_backend(backend: str) -> dict:
         """Select appropriate weights for the given backend."""
-        if backend == "trtllm_nvfp4":
+        if backend == "flashinfer_trtllm_nvfp4":
             return trtllm_weights
         elif "nvfp4" in backend:
             return nvfp4_weights
