@@ -14,9 +14,6 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-# Suppress vLLM scheduler logs during benchmark (must be before vllm imports)
-logging.getLogger("vllm.config.scheduler").setLevel(logging.WARNING)
-
 import torch
 
 from vllm import _custom_ops as ops
@@ -38,6 +35,9 @@ from vllm.platforms import current_platform
 from vllm.scalar_type import scalar_types
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 from vllm.v1.worker.workspace import init_workspace_manager
+
+# Suppress vLLM scheduler logs during benchmark (after imports)
+logging.getLogger("vllm.config.scheduler").setLevel(logging.WARNING)
 
 # Constants
 FLOAT4_E2M1_MAX = scalar_types.float4_e2m1f.max()
@@ -912,6 +912,16 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Check matplotlib availability if figures are requested
+    if args.output_figures:
+        try:
+            import matplotlib.pyplot as plt  # noqa: F401
+        except ImportError:
+            raise ImportError(
+                "matplotlib is required for figure generation. "
+                "Install it with: pip install matplotlib"
+            ) from None
 
     # Check device capability
     if not current_platform.has_device_capability(100):

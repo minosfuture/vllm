@@ -157,12 +157,17 @@ def benchmark_flashinfer_mla_decode(
 
     device = "cuda"
 
-    # Create query tensor: (batch_size, q_len_per_request, num_heads, qk_head_dim)
+    # For FlashInfer MLA decode, query head_dim must match KV cache head_dim
+    # qk_head_dim = kv_lora_rank + qk_rope_head_dim = 576 (same as head_size)
+    # This is different from the logical qk_head_dim (qk_nope + qk_rope = 192)
+    query_head_dim = config.head_size  # 576
+
+    # Create query tensor: (batch_size, q_len_per_request, num_heads, head_size)
     q = torch.randn(
         num_seqs,
         query_len,
         config.num_heads,
-        config.qk_head_dim,
+        query_head_dim,
         device=device,
         dtype=config.dtype,
     )
@@ -912,6 +917,16 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Check matplotlib availability if figures are requested
+    if args.output_figures:
+        try:
+            import matplotlib.pyplot as plt  # noqa: F401
+        except ImportError:
+            raise ImportError(
+                "matplotlib is required for figure generation. "
+                "Install it with: pip install matplotlib"
+            ) from None
 
     # Check device capability
     capability = current_platform.get_device_capability()
