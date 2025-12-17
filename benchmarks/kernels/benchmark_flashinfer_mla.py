@@ -661,6 +661,29 @@ def generate_figures(
                     num_seqs, throughputs, "o-", color=color, label=label, linewidth=2
                 )
 
+                # Add data labels
+                offset_y = 8 if idx % 2 == 0 else -12
+                for x, y in zip(num_seqs, latencies):
+                    axes[0].annotate(
+                        f"{y:.0f}",
+                        (x, y),
+                        textcoords="offset points",
+                        xytext=(0, offset_y),
+                        ha="center",
+                        fontsize=7,
+                        color=color,
+                    )
+                for x, y in zip(num_seqs, throughputs):
+                    axes[1].annotate(
+                        f"{y:.1f}",
+                        (x, y),
+                        textcoords="offset points",
+                        xytext=(0, offset_y),
+                        ha="center",
+                        fontsize=7,
+                        color=color,
+                    )
+
             axes[0].set_xlabel("Number of Sequences (Batch Size)", fontsize=12)
             axes[1].set_xlabel("Number of Sequences (Batch Size)", fontsize=12)
 
@@ -690,6 +713,29 @@ def generate_figures(
                     label=label,
                     linewidth=2,
                 )
+
+                # Add data labels
+                offset_y = 8 if idx % 2 == 0 else -12
+                for x, y in zip(total_tokens, latencies):
+                    axes[0].annotate(
+                        f"{y:.0f}",
+                        (x, y),
+                        textcoords="offset points",
+                        xytext=(0, offset_y),
+                        ha="center",
+                        fontsize=7,
+                        color=color,
+                    )
+                for x, y in zip(total_tokens, throughputs):
+                    axes[1].annotate(
+                        f"{y:.2f}",
+                        (x, y),
+                        textcoords="offset points",
+                        xytext=(0, offset_y),
+                        ha="center",
+                        fontsize=7,
+                        color=color,
+                    )
 
             axes[0].set_xlabel("Total Tokens", fontsize=12)
             axes[1].set_xlabel("Total Tokens", fontsize=12)
@@ -765,9 +811,31 @@ def generate_figures(
             axes[0].plot(
                 x_values, latencies, "o-", color=color, label=backend, linewidth=2
             )
+            # Add data labels for latency
+            for x, y in zip(x_values, latencies):
+                axes[0].annotate(
+                    f"{y:.0f}",
+                    (x, y),
+                    textcoords="offset points",
+                    xytext=(0, 5),
+                    ha="center",
+                    fontsize=7,
+                    color=color,
+                )
             axes[1].plot(
                 x_values, throughputs, "o-", color=color, label=backend, linewidth=2
             )
+            # Add data labels for throughput
+            for x, y in zip(x_values, throughputs):
+                axes[1].annotate(
+                    f"{y:.1f}",
+                    (x, y),
+                    textcoords="offset points",
+                    xytext=(0, 5),
+                    ha="center",
+                    fontsize=7,
+                    color=color,
+                )
 
         x_label = "Number of Sequences" if phase == "decode" else "Total Tokens"
         axes[0].set_xlabel(x_label, fontsize=12)
