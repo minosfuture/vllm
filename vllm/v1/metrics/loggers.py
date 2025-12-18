@@ -223,6 +223,10 @@ class LoggingStatLogger(StatLoggerBase):
         return
 
     def log(self):
+        # Save latency samples before _update_stats() calls _reset()
+        latency_samples = self.latency_samples
+        self.latency_samples = []
+
         self._update_stats()
         self.aggregate_scheduler_stats()
         # Avoid log noise on an idle production system
@@ -277,22 +281,24 @@ class LoggingStatLogger(StatLoggerBase):
         self.kv_connector_logging.log(log_fn=log_fn)
 
         # Log latency breakdown stats if enabled and samples available
-        self._log_latency_breakdown(log_fn)
+        self._log_latency_breakdown(log_fn, latency_samples)
 
-    def _log_latency_breakdown(self, log_fn: Callable):
+    def _log_latency_breakdown(
+        self, log_fn: Callable, latency_samples: list[LatencyBreakdown]
+    ):
         """Log aggregated latency breakdown stats."""
-        if not envs.VLLM_LOG_LATENCY_BREAKDOWN or not self.latency_samples:
+        if not envs.VLLM_LOG_LATENCY_BREAKDOWN or not latency_samples:
             return
 
         # Extract arrays for each metric
-        e2e = np.array([s.e2e_ms for s in self.latency_samples])
-        zmq = np.array([s.zmq_transport_ms for s in self.latency_samples])
-        decode = np.array([s.decode_ms for s in self.latency_samples])
-        queue_get = np.array([s.queue_get_ms for s in self.latency_samples])
-        process = np.array([s.process_outputs_ms for s in self.latency_samples])
-        detok = np.array([s.detokenize_ms for s in self.latency_samples])
-        logprobs = np.array([s.logprobs_ms for s in self.latency_samples])
-        num_outputs = sum(s.num_outputs for s in self.latency_samples)
+        e2e = np.array([s.e2e_ms for s in latency_samples])
+        zmq = np.array([s.zmq_transport_ms for s in latency_samples])
+        decode = np.array([s.decode_ms for s in latency_samples])
+        queue_get = np.array([s.queue_get_ms for s in latency_samples])
+        process = np.array([s.process_outputs_ms for s in latency_samples])
+        detok = np.array([s.detokenize_ms for s in latency_samples])
+        logprobs = np.array([s.logprobs_ms for s in latency_samples])
+        num_outputs = sum(s.num_outputs for s in latency_samples)
 
         def stats_str(arr: np.ndarray) -> str:
             """Format mean/p50/p99 for an array."""
@@ -316,7 +322,7 @@ class LoggingStatLogger(StatLoggerBase):
             stats_str(process),
             stats_str(detok),
             stats_str(logprobs),
-            len(self.latency_samples),
+            len(latency_samples),
             num_outputs,
         )
 
