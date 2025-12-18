@@ -16,6 +16,7 @@ from typing import Any, TypeVar, cast
 import msgspec
 import zmq
 
+import vllm.envs as envs
 from vllm.config import ParallelConfig, VllmConfig
 from vllm.distributed import stateless_destroy_torch_distributed_process_group
 from vllm.envs import enable_envs_cache
@@ -888,9 +889,19 @@ class EngineCoreProc(EngineCore):
 
         # Step the engine core.
         outputs, model_executed = self.step_fn()
+
+        # Capture step completion timestamp for latency instrumentation
+        if envs.VLLM_LOG_LATENCY_BREAKDOWN and outputs:
+            step_complete_ts = time.time()
+            for output in outputs.values():
+                output.step_complete_ts = step_complete_ts
+
         # Put EngineCoreOutputs into the output queue.
-        for output in outputs.items() if outputs else ():
-            self.output_queue.put_nowait(output)
+        for client_idx, engine_output in outputs.items() if outputs else ():
+            # Capture queue put timestamp for latency instrumentation
+            if envs.VLLM_LOG_LATENCY_BREAKDOWN:
+                engine_output.queue_put_ts = time.time()
+            self.output_queue.put_nowait((client_idx, engine_output))
         # Post-step hook.
         self.post_step(model_executed)
 
