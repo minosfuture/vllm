@@ -545,18 +545,31 @@ class AsyncLLM(EngineClient):
                             ) * 1000
                         client_decode_ms = outputs._client_decode_ms
 
-                        # Calculate e2e latency (includes step_fn time)
+                        # Calculate engine e2e (step_start -> queue_put)
+                        engine_e2e_ms = 0.0
+                        if outputs.step_start_ts > 0 and outputs.queue_put_ts > 0:
+                            engine_e2e_ms = (
+                                outputs.queue_put_ts - outputs.step_start_ts
+                            ) * 1000
+
+                        # Calculate client e2e (client_recv -> process_end)
+                        client_e2e_ms = 0.0
+                        if outputs._client_recv_ts > 0:
+                            client_e2e_ms = (
+                                process_end - outputs._client_recv_ts
+                            ) * 1000
+
+                        # Calculate total e2e latency (step_start -> process_end)
                         e2e_ms = 0.0
-                        if outputs.step_complete_ts > 0:
-                            e2e_ms = (
-                                outputs.step_fn_ms
-                                + (process_end - outputs.step_complete_ts) * 1000
-                            )
+                        if outputs.step_start_ts > 0:
+                            e2e_ms = (process_end - outputs.step_start_ts) * 1000
 
                         latency_breakdown = LatencyBreakdown(
                             step_fn_ms=outputs.step_fn_ms,
+                            engine_e2e_ms=engine_e2e_ms,
                             zmq_transport_ms=zmq_transport_ms,
                             decode_ms=client_decode_ms,
+                            client_e2e_ms=client_e2e_ms,
                             queue_get_ms=(queue_get_end - queue_get_start) * 1000,
                             process_outputs_ms=(process_end - process_start) * 1000,
                             detokenize_ms=total_detokenize_ms,
