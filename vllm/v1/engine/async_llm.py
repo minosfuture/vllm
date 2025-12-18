@@ -551,6 +551,7 @@ class AsyncLLM(EngineClient):
                             e2e_ms = (process_end - outputs.step_complete_ts) * 1000
 
                         latency_breakdown = LatencyBreakdown(
+                            step_fn_ms=outputs.step_fn_ms,
                             zmq_transport_ms=zmq_transport_ms,
                             decode_ms=client_decode_ms,
                             queue_get_ms=(queue_get_end - queue_get_start) * 1000,

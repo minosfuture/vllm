@@ -43,6 +43,9 @@ class LatencyBreakdown:
     All values are in milliseconds.
     """
 
+    # Engine-side latency
+    step_fn_ms: float = 0.0  # step_fn() execution time
+
     # Cross-process latencies
     zmq_transport_ms: float = 0.0  # queue_put_ts (engine) -> recv (client)
     decode_ms: float = 0.0  # msgpack decode time
@@ -291,6 +294,7 @@ class LoggingStatLogger(StatLoggerBase):
             return
 
         # Extract arrays for each metric
+        step_fn = np.array([s.step_fn_ms for s in latency_samples])
         e2e = np.array([s.e2e_ms for s in latency_samples])
         zmq = np.array([s.zmq_transport_ms for s in latency_samples])
         decode = np.array([s.decode_ms for s in latency_samples])
@@ -311,10 +315,11 @@ class LoggingStatLogger(StatLoggerBase):
 
         log_fn(
             "%sLatency breakdown (mean/p50/p99 ms): "
-            "e2e=%s, zmq=%s, decode=%s, queue_get=%s, "
+            "step_fn=%s, e2e=%s, zmq=%s, decode=%s, queue_get=%s, "
             "process=%s, detok=%s, logprobs=%s, "
             "samples=%d, outputs=%d",
             self.log_prefix,
+            stats_str(step_fn),
             stats_str(e2e),
             stats_str(zmq),
             stats_str(decode),
