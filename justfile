@@ -31,7 +31,7 @@ VLLM_USE_NCCL_SYMM_MEM=1 '''
 
 #VLLM_MOE_ROUTING_SIMULATION_STRATEGY=uniform_random \
 PREFILL_VLLM_ENV := SYSTEM_ENV + COMMON_VLLM_ENV + '''\
-VLLM_FLASHINFER_MOE_BACKEND=throughput \
+VLLM_FLASHINFER_MOE_BACKEND=latency \
 VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
 VLLM_ENABLE_MOE_DP_CHUNK=0 \
 '''
@@ -59,18 +59,18 @@ COMMON_VLLM_ARGS := '''
 --port 8000 \
 --async-scheduling '''
 
+#--enable-eplb \
+#--eplb-config '{"window_size":"100", "step_interval":"500", "num_redundant_experts":"32", "log_balancedness":"False"}' \
 PREFILL_VLLM_ARGS := COMMON_VLLM_ARGS + '''\
 --no-enable-prefix-caching \
 --swap-space 16 \
---max-num-seqs 128 \
+--max-num-seqs 64 \
 --gpu-memory-utilization 0.85 \
---max-num-batched-tokens 32768 \
+--max-num-batched-tokens 65536 \
 --compilation_config.pass_config.enable_fi_allreduce_fusion true \
 --compilation_config.pass_config.enable_attn_fusion true \
 --compilation_config.pass_config.enable_noop true \
 --compilation_config.custom_ops+=+quant_fp8,+rms_norm \
---enable-eplb \
---eplb-config '{"window_size":"100", "step_interval":"500", "num_redundant_experts":"32", "log_balancedness":"False"}' \
 '''
 
 PREFILL_PD_VLLM_ARGS := PREFILL_VLLM_ARGS + PD_VLLM_ARGS
@@ -136,7 +136,6 @@ prefill-off PMA DPS NUMA="0" :
     --data-parallel-size {{DPS}} \
     --data-parallel-size-local {{DPS}} \
     --enforce-eager \
-    --gpu-memory-utilization 0.84 \
     --offload-group-size 2 \
     --offload-num-in-group 1 \
     --offload-prefetch-step 1 \
