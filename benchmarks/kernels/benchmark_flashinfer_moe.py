@@ -27,6 +27,9 @@ from vllm.model_executor.layers.fused_moe.config import (
     nvfp4_moe_quant_config,
 )
 from vllm.model_executor.layers.fused_moe.cutlass_moe import cutlass_moe_fp4
+from vllm.model_executor.layers.fused_moe.flashinfer_cutedsl_moe import (
+    flashinfer_cutedsl_moe_masked,
+)
 from vllm.model_executor.layers.fused_moe.fused_moe import fused_experts, fused_topk
 from vllm.model_executor.layers.quantization.utils.flashinfer_fp4_moe import (
     prepare_static_weights_for_trtllm_fp4_moe,
@@ -356,6 +359,90 @@ def benchmark_cutlass_moe_fp4(
                 e=config.num_experts,
                 quant_config=quant_config,
             )
+
+    # Warmup
+    for _ in range(num_warmup):
+        run_kernel()
+    torch.cuda.synchronize()
+
+    # Benchmark
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+
+    start_event.record()
+    for _ in range(num_iters):
+        run_kernel()
+    end_event.record()
+    end_event.synchronize()
+
+    latency_ms = start_event.elapsed_time(end_event) / num_iters
+    return latency_ms * 1000  # Return in microseconds
+
+
+@register_backend("flashinfer_cutedsl_nvfp4")
+def benchmark_flashinfer_cutedsl_nvfp4(
+    config: MoEConfig,
+    num_tokens: int,
+    weights: dict,
+    num_warmup: int = 10,
+    num_iters: int = 100,
+) -> float:
+    """Benchmark FlashInfer CuteDSL NVFP4 MoE kernel (direct kernel call).
+
+    This benchmark directly calls the flashinfer_cutedsl_moe_masked kernel
+    with batched expert format inputs, bypassing the modular kernel wrapper.
+    """
+    device = "cuda"
+    num_experts = config.num_experts
+    hidden_size = config.hidden_size
+    intermediate_size = config.intermediate_size
+
+    # Compute tokens per expert (assume uniform distribution for benchmark)
+    tokens_per_expert = num_tokens * config.topk // num_experts
+    # Use max tokens per expert as the M dimension (padded)
+    max_tokens_per_expert = max(tokens_per_expert, 1)
+
+    # Create batched hidden states: [num_experts, max_tokens, hidden_size]
+    hidden_states = torch.randn(
+        (num_experts, max_tokens_per_expert, hidden_size),
+        device=device,
+        dtype=config.dtype,
+    )
+
+    # Create expert_num_tokens (masked_m): number of tokens per expert
+    expert_num_tokens = torch.full(
+        (num_experts,), tokens_per_expert, device=device, dtype=torch.int32
+    )
+
+    # Workspace for intermediate gateup: [num_experts, max_tokens, 2*interm]
+    workspace = torch.empty(
+        (num_experts, max_tokens_per_expert, 2 * intermediate_size),
+        device=device,
+        dtype=config.dtype,
+    )
+
+    # Output tensor: [num_experts, max_tokens, hidden_size]
+    out = torch.empty(
+        (num_experts, max_tokens_per_expert, hidden_size),
+        device=device,
+        dtype=config.dtype,
+    )
+
+    def run_kernel():
+        flashinfer_cutedsl_moe_masked(
+            hidden_states=hidden_states,
+            input_global_scale=weights["a1_gs"],
+            w1=weights["w1_fp4"],
+            w1_blockscale=weights["w1_blockscale"],
+            w1_alpha=weights["w1_gs"],
+            w2=weights["w2_fp4"],
+            a2_global_scale=weights["a2_gs"],
+            w2_blockscale=weights["w2_blockscale"],
+            w2_alpha=weights["w2_gs"],
+            masked_m=expert_num_tokens,
+            workspace=workspace,
+            out=out,
+        )
 
     # Warmup
     for _ in range(num_warmup):
