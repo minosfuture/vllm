@@ -932,14 +932,20 @@ class EngineCoreProc(EngineCore):
     def _process_engine_step(self) -> bool:
         """Called only when there are unfinished local requests."""
 
+        # Capture start time for latency instrumentation
+        if envs.VLLM_LOG_LATENCY_BREAKDOWN:
+            step_start_ts = time.time()
+
         # Step the engine core.
         outputs, model_executed = self.step_fn()
 
         # Capture step completion timestamp for latency instrumentation
         if envs.VLLM_LOG_LATENCY_BREAKDOWN and outputs:
             step_complete_ts = time.time()
+            step_fn_ms = (step_complete_ts - step_start_ts) * 1000
             for output in outputs.values():
                 output.step_complete_ts = step_complete_ts
+                output.step_fn_ms = step_fn_ms
 
         # Put EngineCoreOutputs into the output queue.
         for client_idx, engine_output in outputs.items() if outputs else ():
