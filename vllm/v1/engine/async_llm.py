@@ -561,10 +561,13 @@ class AsyncLLM(EngineClient):
                             ) * 1000
                         client_decode_ms = outputs._client_decode_ms
 
-                        # Calculate e2e latency
+                        # Calculate e2e latency (includes step_fn time)
                         e2e_ms = 0.0
                         if outputs.step_complete_ts > 0:
-                            e2e_ms = (process_end - outputs.step_complete_ts) * 1000
+                            e2e_ms = (
+                                outputs.step_fn_ms
+                                + (process_end - outputs.step_complete_ts) * 1000
+                            )
 
                         latency_breakdown = LatencyBreakdown(
                             step_fn_ms=outputs.step_fn_ms,
