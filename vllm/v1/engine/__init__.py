@@ -178,6 +178,8 @@ class EngineCoreOutputs(
     timestamp: float = 0.0
 
     # Latency instrumentation timestamps (wall-clock for cross-process timing)
+    # Set when step_fn() starts in _process_engine_step
+    step_start_ts: float = 0.0
     # Set when step_fn() completes in _process_engine_step
     step_complete_ts: float = 0.0
     # Duration of step_fn() in milliseconds

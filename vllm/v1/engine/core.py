@@ -944,6 +944,7 @@ class EngineCoreProc(EngineCore):
             step_complete_ts = time.time()
             step_fn_ms = (step_complete_ts - step_start_ts) * 1000
             for output in outputs.values():
+                output.step_start_ts = step_start_ts
                 output.step_complete_ts = step_complete_ts
                 output.step_fn_ms = step_fn_ms
 

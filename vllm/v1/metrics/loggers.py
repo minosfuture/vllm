@@ -47,19 +47,21 @@ class LatencyBreakdown:
 
     # Engine-side latency
     step_fn_ms: float = 0.0  # step_fn() execution time
+    engine_e2e_ms: float = 0.0  # step_start -> queue_put (engine total)
 
     # Cross-process latencies
     zmq_transport_ms: float = 0.0  # queue_put_ts (engine) -> recv (client)
     decode_ms: float = 0.0  # msgpack decode time
 
     # Client-side latencies
+    client_e2e_ms: float = 0.0  # client_recv -> process_end (client total)
     queue_get_ms: float = 0.0  # outputs_queue.get() wait time
     process_outputs_ms: float = 0.0  # total process_outputs() time
     detokenize_ms: float = 0.0  # detokenization time
     logprobs_ms: float = 0.0  # logprobs computation time
 
     # End-to-end latency
-    e2e_ms: float = 0.0  # step_complete_ts -> token delivered
+    e2e_ms: float = 0.0  # step_start -> token delivered (total)
 
     # Metadata
     num_outputs: int = 0
@@ -319,13 +321,14 @@ class LoggingStatLogger(StatLoggerBase):
 
         # Extract arrays for each metric
         step_fn = np.array([s.step_fn_ms for s in latency_samples])
-        e2e = np.array([s.e2e_ms for s in latency_samples])
+        engine_e2e = np.array([s.engine_e2e_ms for s in latency_samples])
         zmq = np.array([s.zmq_transport_ms for s in latency_samples])
         decode = np.array([s.decode_ms for s in latency_samples])
-        queue_get = np.array([s.queue_get_ms for s in latency_samples])
+        client_e2e = np.array([s.client_e2e_ms for s in latency_samples])
         process = np.array([s.process_outputs_ms for s in latency_samples])
         detok = np.array([s.detokenize_ms for s in latency_samples])
         logprobs = np.array([s.logprobs_ms for s in latency_samples])
+        e2e = np.array([s.e2e_ms for s in latency_samples])
         num_outputs = sum(s.num_outputs for s in latency_samples)
 
         def stats_str(arr: np.ndarray) -> str:
@@ -339,15 +342,17 @@ class LoggingStatLogger(StatLoggerBase):
 
         log_fn(
             "%sLatency breakdown (mean/p50/p99 ms): "
-            "step_fn=%s, e2e=%s, zmq=%s, decode=%s, queue_get=%s, "
-            "process=%s, detok=%s, logprobs=%s, "
+            "e2e=%s, engine[step_fn=%s, e2e=%s], "
+            "zmq=%s, decode=%s, "
+            "client[e2e=%s, process=%s, detok=%s, logprobs=%s], "
             "samples=%d, outputs=%d",
             self.log_prefix,
-            stats_str(step_fn),
             stats_str(e2e),
+            stats_str(step_fn),
+            stats_str(engine_e2e),
             stats_str(zmq),
             stats_str(decode),
-            stats_str(queue_get),
+            stats_str(client_e2e),
             stats_str(process),
             stats_str(detok),
             stats_str(logprobs),
