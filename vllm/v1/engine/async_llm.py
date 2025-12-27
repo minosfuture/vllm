@@ -41,6 +41,7 @@ from vllm.v1.engine.output_processor import OutputProcessor, RequestOutputCollec
 from vllm.v1.engine.parallel_sampling import ParentRequest
 from vllm.v1.executor import Executor
 from vllm.v1.metrics.loggers import (
+    LatencyBreakdown,
     StatLoggerFactory,
     StatLoggerManager,
     load_stat_logger_plugin_factories,
@@ -488,9 +489,18 @@ class AsyncLLM(EngineClient):
 
         async def output_handler():
             try:
+                log_latency = envs.VLLM_LOG_LATENCY_BREAKDOWN
                 while True:
+                    # Track queue get time for latency instrumentation
+                    if log_latency:
+                        queue_get_start = time.time()
+
                     # 1) Pull EngineCoreOutputs from the EngineCore.
                     outputs = await engine_core.get_output_async()
+
+                    if log_latency:
+                        queue_get_end = time.time()
+
                     num_outputs = len(outputs.outputs)
 
                     iteration_stats = (
@@ -508,6 +518,12 @@ class AsyncLLM(EngineClient):
                             cdiv(num_outputs, envs.VLLM_V1_OUTPUT_PROC_CHUNK_SIZE),
                         )
 
+                    # Track process_outputs time
+                    if log_latency:
+                        process_start = time.time()
+                        total_detokenize_ms = 0.0
+                        total_logprobs_ms = 0.0
+
                     for i, outputs_slice in enumerate(slices):
                         # 2) Process EngineCoreOutputs.
                         processed_outputs = output_processor.process_outputs(
@@ -515,6 +531,11 @@ class AsyncLLM(EngineClient):
                         )
                         # NOTE: RequestOutputs are pushed to their queues.
                         assert not processed_outputs.request_outputs
+
+                        # Accumulate latency stats from processor
+                        if log_latency:
+                            total_detokenize_ms += processed_outputs.detokenize_ms
+                            total_logprobs_ms += processed_outputs.logprobs_ms
 
                         # Allow other asyncio tasks to run between chunks
                         if i + 1 < len(slices):
@@ -527,6 +548,35 @@ class AsyncLLM(EngineClient):
 
                     output_processor.update_scheduler_stats(outputs.scheduler_stats)
 
+                    # Build latency breakdown for logging
+                    latency_breakdown = None
+                    if log_latency and num_outputs > 0:
+                        process_end = time.time()
+
+                        # Calculate ZMQ transport time from timestamps
+                        zmq_transport_ms = 0.0
+                        if outputs.queue_put_ts > 0 and outputs._client_recv_ts > 0:
+                            zmq_transport_ms = (
+                                outputs._client_recv_ts - outputs.queue_put_ts
+                            ) * 1000
+                        client_decode_ms = outputs._client_decode_ms
+
+                        # Calculate e2e latency
+                        e2e_ms = 0.0
+                        if outputs.step_complete_ts > 0:
+                            e2e_ms = (process_end - outputs.step_complete_ts) * 1000
+
+                        latency_breakdown = LatencyBreakdown(
+                            zmq_transport_ms=zmq_transport_ms,
+                            decode_ms=client_decode_ms,
+                            queue_get_ms=(queue_get_end - queue_get_start) * 1000,
+                            process_outputs_ms=(process_end - process_start) * 1000,
+                            detokenize_ms=total_detokenize_ms,
+                            logprobs_ms=total_logprobs_ms,
+                            e2e_ms=e2e_ms,
+                            num_outputs=num_outputs,
+                        )
+
                     # 4) Logging.
                     # TODO(rob): make into a coroutine and launch it in
                     # background thread once Prometheus overhead is non-trivial.
@@ -536,6 +586,7 @@ class AsyncLLM(EngineClient):
                             scheduler_stats=outputs.scheduler_stats,
                             iteration_stats=iteration_stats,
                             mm_cache_stats=input_processor.stat_mm_cache(),
+                            latency_breakdown=latency_breakdown,
                         )
             except Exception as e:
                 logger.exception("AsyncLLM output_handler failed.")

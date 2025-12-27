@@ -3,6 +3,7 @@
 
 import asyncio
 from collections import defaultdict
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, cast
@@ -10,6 +11,7 @@ from typing import Any, cast
 import torch
 
 from vllm.lora.request import LoRARequest
+import vllm.envs as envs
 from vllm.outputs import (
     CompletionOutput,
     PoolingOutput,
@@ -88,6 +90,9 @@ class RequestOutputCollector:
 class OutputProcessorOutput:
     request_outputs: list[RequestOutput | PoolingRequestOutput]
     reqs_to_abort: list[str]
+    # Latency instrumentation (in ms)
+    detokenize_ms: float = 0.0
+    logprobs_ms: float = 0.0
 
 
 class RequestState:
@@ -510,6 +515,12 @@ class OutputProcessor:
 
         request_outputs: list[RequestOutput | PoolingRequestOutput] = []
         reqs_to_abort: list[str] = []
+
+        # Latency instrumentation
+        log_latency = envs.VLLM_LOG_LATENCY_BREAKDOWN
+        total_detokenize_ms = 0.0
+        total_logprobs_ms = 0.0
+
         for engine_core_output in engine_core_outputs:
             req_id = engine_core_output.request_id
             req_state = self.request_states.get(req_id)
@@ -533,17 +544,31 @@ class OutputProcessor:
             if pooling_output is None:
                 assert req_state.detokenizer is not None
                 assert req_state.logprobs_processor is not None
+
                 # 2) Detokenize the token ids into text and perform stop checks.
+                if log_latency:
+                    detok_start = time.time()
+
                 stop_string = req_state.detokenizer.update(
                     new_token_ids, finish_reason == FinishReason.STOP
                 )
+
+                if log_latency:
+                    total_detokenize_ms += (time.time() - detok_start) * 1000
+
                 if stop_string:
                     finish_reason = FinishReason.STOP
                     stop_reason = stop_string
 
                 # 3) Compute sample and prompt logprobs for request,
                 # if required.
+                if log_latency:
+                    logprobs_start = time.time()
+
                 req_state.logprobs_processor.update_from_output(engine_core_output)
+
+                if log_latency:
+                    total_logprobs_ms += (time.time() - logprobs_start) * 1000
 
             # 4) Create and handle RequestOutput objects.
             if request_output := req_state.make_request_output(
@@ -590,6 +615,8 @@ class OutputProcessor:
         return OutputProcessorOutput(
             request_outputs=request_outputs,
             reqs_to_abort=reqs_to_abort,
+            detokenize_ms=total_detokenize_ms,
+            logprobs_ms=total_logprobs_ms,
         )
 
     def update_scheduler_stats(self, scheduler_stats: SchedulerStats | None):

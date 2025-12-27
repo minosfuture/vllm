@@ -177,6 +177,15 @@ class EngineCoreOutputs(
     scheduler_stats: SchedulerStats | None = None
     timestamp: float = 0.0
 
+    # Latency instrumentation timestamps (wall-clock for cross-process timing)
+    # Set when step_fn() completes in _process_engine_step
+    step_complete_ts: float = 0.0
+    # Set just before output_queue.put_nowait() in _process_engine_step
+    queue_put_ts: float = 0.0
+    # Client-side latency fields (set after ZMQ receive, not serialized)
+    _client_recv_ts: float = 0.0
+    _client_decode_ms: float = 0.0
+
     utility_output: UtilityOutput | None = None
     finished_requests: set[str] | None = None
 

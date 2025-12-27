@@ -5,8 +5,10 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TypeAlias
 
+import numpy as np
 from prometheus_client import Counter, Gauge, Histogram
 
 import vllm.envs as envs
@@ -36,6 +38,30 @@ AggregateStatLoggerFactory = type["AggregateStatLoggerBase"]
 StatLoggerFactory = AggregateStatLoggerFactory | PerEngineStatLoggerFactory
 
 
+@dataclass
+class LatencyBreakdown:
+    """Per-iteration latency breakdown for TTIT instrumentation.
+
+    All values are in milliseconds.
+    """
+
+    # Cross-process latencies
+    zmq_transport_ms: float = 0.0  # queue_put_ts (engine) -> recv (client)
+    decode_ms: float = 0.0  # msgpack decode time
+
+    # Client-side latencies
+    queue_get_ms: float = 0.0  # outputs_queue.get() wait time
+    process_outputs_ms: float = 0.0  # total process_outputs() time
+    detokenize_ms: float = 0.0  # detokenization time
+    logprobs_ms: float = 0.0  # logprobs computation time
+
+    # End-to-end latency
+    e2e_ms: float = 0.0  # step_complete_ts -> token delivered
+
+    # Metadata
+    num_outputs: int = 0
+
+
 class StatLoggerBase(ABC):
     """Interface for logging metrics.
 
@@ -53,6 +79,7 @@ class StatLoggerBase(ABC):
         scheduler_stats: SchedulerStats | None,
         iteration_stats: IterationStats | None,
         mm_cache_stats: MultiModalCacheStats | None = None,
+        latency_breakdown: LatencyBreakdown | None = None,
         engine_idx: int = 0,
     ): ...
 
@@ -130,6 +157,8 @@ class LoggingStatLogger(StatLoggerBase):
         self.num_generation_tokens: int = 0
         self.num_corrupted_reqs: int = 0
         self.num_preemptions: int = 0
+        # Latency breakdown samples for aggregation
+        self.latency_samples: list[LatencyBreakdown] = []
 
     def _enable_perf_stats(self) -> bool:
         return self.vllm_config.observability_config.enable_mfu_metrics
@@ -157,6 +186,7 @@ class LoggingStatLogger(StatLoggerBase):
         scheduler_stats: SchedulerStats | None,
         iteration_stats: IterationStats | None,
         mm_cache_stats: MultiModalCacheStats | None = None,
+        latency_breakdown: LatencyBreakdown | None = None,
         engine_idx: int = 0,
     ):
         """Log Stats to standard output."""
@@ -186,6 +216,10 @@ class LoggingStatLogger(StatLoggerBase):
                 self.perf_metrics_logging.observe(perf_stats)
         if mm_cache_stats:
             self.mm_caching_metrics.observe(mm_cache_stats)
+
+        # Track latency breakdown if provided
+        if latency_breakdown is not None:
+            self.latency_samples.append(latency_breakdown)
 
     def _update_stats(self):
         now = time.monotonic()
@@ -266,6 +300,50 @@ class LoggingStatLogger(StatLoggerBase):
         if self._enable_perf_stats():
             self.perf_metrics_logging.log(log_fn=log_fn, log_prefix=self.log_prefix)
 
+        # Log latency breakdown stats if enabled and samples available
+        self._log_latency_breakdown(log_fn)
+
+    def _log_latency_breakdown(self, log_fn: Callable):
+        """Log aggregated latency breakdown stats."""
+        if not envs.VLLM_LOG_LATENCY_BREAKDOWN or not self.latency_samples:
+            return
+
+        # Extract arrays for each metric
+        e2e = np.array([s.e2e_ms for s in self.latency_samples])
+        zmq = np.array([s.zmq_transport_ms for s in self.latency_samples])
+        decode = np.array([s.decode_ms for s in self.latency_samples])
+        queue_get = np.array([s.queue_get_ms for s in self.latency_samples])
+        process = np.array([s.process_outputs_ms for s in self.latency_samples])
+        detok = np.array([s.detokenize_ms for s in self.latency_samples])
+        logprobs = np.array([s.logprobs_ms for s in self.latency_samples])
+        num_outputs = sum(s.num_outputs for s in self.latency_samples)
+
+        def stats_str(arr: np.ndarray) -> str:
+            """Format mean/p50/p99 for an array."""
+            if len(arr) == 0:
+                return "n/a"
+            mean = np.mean(arr)
+            p50 = np.percentile(arr, 50)
+            p99 = np.percentile(arr, 99)
+            return f"{mean:.2f}/{p50:.2f}/{p99:.2f}"
+
+        log_fn(
+            "%sLatency breakdown (mean/p50/p99 ms): "
+            "e2e=%s, zmq=%s, decode=%s, queue_get=%s, "
+            "process=%s, detok=%s, logprobs=%s, "
+            "samples=%d, outputs=%d",
+            self.log_prefix,
+            stats_str(e2e),
+            stats_str(zmq),
+            stats_str(decode),
+            stats_str(queue_get),
+            stats_str(process),
+            stats_str(detok),
+            stats_str(logprobs),
+            len(self.latency_samples),
+            num_outputs,
+        )
+
     def log_engine_initialized(self):
         if self.vllm_config.cache_config.num_gpu_blocks:
             logger.debug(
@@ -302,6 +380,7 @@ class AggregatedLoggingStatLogger(LoggingStatLogger, AggregateStatLoggerBase):
         scheduler_stats: SchedulerStats | None,
         iteration_stats: IterationStats | None,
         mm_cache_stats: MultiModalCacheStats | None = None,
+        latency_breakdown: LatencyBreakdown | None = None,
         engine_idx: int = 0,
     ):
         if engine_idx not in self.engine_indexes:
@@ -312,6 +391,7 @@ class AggregatedLoggingStatLogger(LoggingStatLogger, AggregateStatLoggerBase):
             scheduler_stats,
             iteration_stats,
             mm_cache_stats=mm_cache_stats,
+            latency_breakdown=latency_breakdown,
             engine_idx=engine_idx,
         )
         if scheduler_stats is not None:
@@ -363,6 +443,7 @@ class PerEngineStatLoggerAdapter(AggregateStatLoggerBase):
         scheduler_stats: SchedulerStats | None,
         iteration_stats: IterationStats | None,
         mm_cache_stats: MultiModalCacheStats | None = None,
+        latency_breakdown: LatencyBreakdown | None = None,
         engine_idx: int = 0,
     ):
         if engine_idx not in self.per_engine_stat_loggers:
@@ -372,6 +453,7 @@ class PerEngineStatLoggerAdapter(AggregateStatLoggerBase):
             scheduler_stats,
             iteration_stats,
             mm_cache_stats=mm_cache_stats,
+            latency_breakdown=latency_breakdown,
             engine_idx=engine_idx,
         )
 
@@ -1028,9 +1110,11 @@ class PrometheusStatLogger(AggregateStatLoggerBase):
         scheduler_stats: SchedulerStats | None,
         iteration_stats: IterationStats | None,
         mm_cache_stats: MultiModalCacheStats | None = None,
+        latency_breakdown: LatencyBreakdown | None = None,
         engine_idx: int = 0,
     ):
         """Log to prometheus."""
+        # Note: latency_breakdown is not recorded to Prometheus (console only)
         if scheduler_stats is not None:
             self.gauge_scheduler_running[engine_idx].set(
                 scheduler_stats.num_running_reqs
@@ -1295,6 +1379,7 @@ class StatLoggerManager:
         scheduler_stats: SchedulerStats | None,
         iteration_stats: IterationStats | None,
         mm_cache_stats: MultiModalCacheStats | None = None,
+        latency_breakdown: LatencyBreakdown | None = None,
         engine_idx: int | None = None,
     ):
         if engine_idx is None:
@@ -1304,6 +1389,7 @@ class StatLoggerManager:
                 scheduler_stats,
                 iteration_stats,
                 mm_cache_stats=mm_cache_stats,
+                latency_breakdown=latency_breakdown,
                 engine_idx=engine_idx,
             )
 

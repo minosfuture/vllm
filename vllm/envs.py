@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     VLLM_LOGGING_COLOR: str = "auto"
     NO_COLOR: bool = False
     VLLM_LOG_STATS_INTERVAL: float = 10.0
+    VLLM_LOG_LATENCY_BREAKDOWN: bool = False
     VLLM_TRACE_FUNCTION: int = 0
     VLLM_ATTENTION_BACKEND: str | None = None
     VLLM_USE_FLASHINFER_SAMPLER: bool | None = None
@@ -661,6 +662,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_LOG_STATS_INTERVAL": lambda: val
     if (val := float(os.getenv("VLLM_LOG_STATS_INTERVAL", "10."))) > 0.0
     else 10.0,
+    # If set to 1, vllm will log latency breakdown stats (engine step to token)
+    # at the same interval as VLLM_LOG_STATS_INTERVAL
+    "VLLM_LOG_LATENCY_BREAKDOWN": lambda: bool(
+        int(os.getenv("VLLM_LOG_LATENCY_BREAKDOWN", "0"))
+    ),
     # Trace function calls
     # If set to 1, vllm will trace function calls
     # Useful for debugging

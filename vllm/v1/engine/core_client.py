@@ -5,6 +5,7 @@ import contextlib
 import multiprocessing
 import queue
 import sys
+import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
@@ -19,6 +20,7 @@ import msgspec.msgpack
 import zmq
 import zmq.asyncio
 
+import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.envs import VLLM_ENGINE_READY_TIMEOUT_S
 from vllm.logger import init_logger
@@ -861,10 +863,28 @@ class AsyncMPClient(MPClient):
 
         async def process_outputs_socket():
             try:
+                log_latency = envs.VLLM_LOG_LATENCY_BREAKDOWN
                 while True:
                     frames = await output_socket.recv_multipart(copy=False)
+
+                    # Capture recv timestamp for latency instrumentation
+                    if log_latency:
+                        recv_ts = time.time()
+
                     resources.validate_alive(frames)
+
+                    # Track decode time
+                    if log_latency:
+                        decode_start = time.time()
+
                     outputs: EngineCoreOutputs = decoder.decode(frames)
+
+                    if log_latency:
+                        decode_end = time.time()
+                        # Attach timing info to outputs for downstream processing
+                        outputs._client_recv_ts = recv_ts
+                        outputs._client_decode_ms = (decode_end - decode_start) * 1000
+
                     if outputs.utility_output:
                         _process_utility_output(outputs.utility_output, utility_results)
                         continue
