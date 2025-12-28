@@ -1741,6 +1741,19 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
         )
 
         # GEMM 2 processing
+        # Log raw w2_input_scale loaded from checkpoint
+        raw_w2_input_scale = layer.w2_input_scale.data
+        logger.info(
+            f"[FP4_DISP_DBG] NvFp4MoE process_weights: "
+            f"raw_w2_input_scale.shape={raw_w2_input_scale.shape}, "
+            f"min={raw_w2_input_scale.min().item():.6f}, "
+            f"max={raw_w2_input_scale.max().item():.6f}, "
+            f"mean={raw_w2_input_scale.mean().item():.6f}, "
+            f"has_nan={torch.isnan(raw_w2_input_scale).any().item()}, "
+            f"has_inf={torch.isinf(raw_w2_input_scale).any().item()}, "
+            f"first_5={raw_w2_input_scale[:5].tolist()}"
+        )
+
         if use_global_sf:
             # For backends provide by Flashinfer, the input global scales are
             # shared across all experts.
@@ -1749,6 +1762,18 @@ class ModelOptNvFp4FusedMoE(FusedMoEMethodBase):
             )
         else:
             w2_input_scale = layer.w2_input_scale
+
+        # Log computed a2_gscale (which is 1/w2_input_scale)
+        a2_gscale_computed = (1 / w2_input_scale).to(torch.float32)
+        logger.info(
+            f"[FP4_DISP_DBG] NvFp4MoE process_weights: "
+            f"a2_gscale (1/w2_input_scale) computed: "
+            f"min={a2_gscale_computed.min().item():.6f}, "
+            f"max={a2_gscale_computed.max().item():.6f}, "
+            f"mean={a2_gscale_computed.mean().item():.6f}, "
+            f"first_5={a2_gscale_computed[:5].tolist()}"
+        )
+
         layer.g2_alphas = Parameter(
             (w2_input_scale * layer.w2_weight_scale_2).to(torch.float32),
             requires_grad=False,
