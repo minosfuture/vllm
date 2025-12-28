@@ -19,6 +19,8 @@ from vllm.utils.flashinfer import (
 
 logger = init_logger(__name__)
 
+LOG_PREFIX = "[FP4_DISP_DBG]"
+
 
 def is_valid_flashinfer_cutedsl_fused_moe(
     hidden_states: torch.Tensor, w1: torch.Tensor, w2: torch.Tensor
@@ -156,6 +158,18 @@ class FlashInferCuteDSLExperts(mk.FusedMoEPermuteExpertsUnpermute):
             if envs.VLLM_DEEPEPLL_NVFP4_DISPATCH
             else hidden_states
         )
+
+        # Log apply inputs
+        logger.info(
+            f"{LOG_PREFIX} FlashInferCuteDSLExperts.apply: "
+            f"hidden_states.shape={hidden_states.shape}, hidden_states.dtype={hidden_states.dtype}, "
+            f"output.shape={output.shape}, output.dtype={output.dtype}, "
+            f"w1.shape={w1.shape}, w2.shape={w2.shape}, "
+            f"NVFP4_DISPATCH={envs.VLLM_DEEPEPLL_NVFP4_DISPATCH}, "
+            f"a1q_scale={'None' if a1q_scale is None else (a1q_scale.shape, a1q_scale.dtype)}, "
+            f"expert_num_tokens={expert_num_tokens}"
+        )
+
         flashinfer_cutedsl_moe_masked(
             hidden_states=flashinfer_hidden_states,
             input_global_scale=input_global_scale,
@@ -255,6 +269,12 @@ def flashinfer_cutedsl_moe_masked(
         num_experts, m, k_by_2 = aq.shape
         k = k_by_2 * 2
         aq = aq.permute(1, 2, 0)
+        logger.info(
+            f"{LOG_PREFIX} flashinfer_cutedsl_moe_masked (tuple input): "
+            f"num_experts={num_experts}, m={m}, k={k}, n={n}, "
+            f"aq.shape={aq.shape}, aq_sf.shape={aq_sf.shape}, "
+            f"w1.shape={w1.shape}, w2.shape={w2.shape}"
+        )
     else:
         num_experts, m, k = hidden_states.shape
 
@@ -269,6 +289,13 @@ def flashinfer_cutedsl_moe_masked(
             hidden_states,
             masked_m,
             input_global_scale,
+        )
+        logger.info(
+            f"{LOG_PREFIX} flashinfer_cutedsl_moe_masked (tensor input): "
+            f"num_experts={num_experts}, m={m}, k={k}, n={n}, "
+            f"hidden_states.shape={hidden_states.shape}, "
+            f"aq.shape={aq.shape}, aq_sf.shape={aq_sf.shape}, "
+            f"w1.shape={w1.shape}, w2.shape={w2.shape}"
         )
 
     assert w1.shape[-2] == 2 * n, f"w1 last-2 dim must be 2*n, got {w1.shape}"

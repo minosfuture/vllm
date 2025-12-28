@@ -6,8 +6,13 @@ import torch
 
 from vllm.attention.layer import MLAAttention
 from vllm.config import CacheConfig
+from vllm.logger import init_logger
 from vllm.model_executor.custom_op import CustomOp
 from vllm.model_executor.layers.quantization import QuantizationConfig
+
+logger = init_logger(__name__)
+
+LOG_PREFIX = "[FP4_DISP_DBG]"
 
 
 @dataclass
@@ -171,7 +176,22 @@ class MultiHeadLatentAttentionWrapper(CustomOp):
             positions=positions,
         )
 
-        return self.o_proj(attn_out)[0]
+        # Log before o_proj call
+        logger.info(
+            f"{LOG_PREFIX} MLA.forward_native before o_proj: "
+            f"prefix={self.prefix}, "
+            f"attn_out.shape={attn_out.shape}, attn_out.dtype={attn_out.dtype}, "
+            f"o_proj_type={type(self.o_proj).__name__}"
+        )
+
+        o_proj_out = self.o_proj(attn_out)[0]
+
+        logger.info(
+            f"{LOG_PREFIX} MLA.forward_native after o_proj: "
+            f"output.shape={o_proj_out.shape}, output.dtype={o_proj_out.dtype}"
+        )
+
+        return o_proj_out
 
     def forward_cuda(self, *args, **kwargs):
         return self.forward_native(*args, **kwargs)

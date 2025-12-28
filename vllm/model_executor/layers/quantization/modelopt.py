@@ -130,6 +130,11 @@ class ModelOptQuantConfigBase(QuantizationConfig):
     ):
         super().__init__()
         self.exclude_modules: list[str] = exclude_modules
+        logger.info(
+            f"[FP4_DISP_DBG] ModelOptQuantConfigBase.__init__: "
+            f"exclude_modules count={len(exclude_modules)}, "
+            f"sample_modules={exclude_modules[:5] if len(exclude_modules) > 5 else exclude_modules}"
+        )
 
     def is_layer_excluded(self, prefix: str) -> bool:
         """
@@ -144,6 +149,10 @@ class ModelOptQuantConfigBase(QuantizationConfig):
 
         # First check exact matching with fused layer support
         if is_layer_skipped(prefix, self.exclude_modules, self.packed_modules_mapping):
+            logger.info(
+                f"[FP4_DISP_DBG] is_layer_excluded: prefix={prefix} EXCLUDED "
+                f"(is_layer_skipped matched)"
+            )
             return True
 
         # TODO: This special hard coded logic is not needed for quantized checkpoints
@@ -160,13 +169,25 @@ class ModelOptQuantConfigBase(QuantizationConfig):
                     and exclude_module in prefix.removeprefix("language_model.")
                 )
             ):
+                logger.info(
+                    f"[FP4_DISP_DBG] is_layer_excluded: prefix={prefix} EXCLUDED "
+                    f"(substring match: {exclude_module})"
+                )
                 return True
 
         # modelopt exclude modules are not simple strings, they are wildcards
         for wildcard_pattern in self.exclude_modules:
             if fnmatch(prefix, wildcard_pattern):
+                logger.info(
+                    f"[FP4_DISP_DBG] is_layer_excluded: prefix={prefix} EXCLUDED "
+                    f"(wildcard match: {wildcard_pattern})"
+                )
                 return True
 
+        logger.info(
+            f"[FP4_DISP_DBG] is_layer_excluded: prefix={prefix} NOT excluded "
+            f"(will be quantized to NVFP4)"
+        )
         return False
 
     def get_quant_method(
@@ -1233,6 +1254,18 @@ class ModelOptNvFp4LinearMethod(LinearMethodBase):
         params_dtype: torch.dtype,
         **extra_weight_attrs,
     ):
+        # Log weight creation for NVFP4 linear layers
+        layer_prefix = extra_weight_attrs.get("prefix", "unknown")
+        logger.info(
+            f"[FP4_DISP_DBG] ModelOptNvFp4LinearMethod.create_weights: "
+            f"layer_prefix={layer_prefix}, "
+            f"input_size_per_partition={input_size_per_partition}, "
+            f"output_partition_sizes={output_partition_sizes}, "
+            f"backend={self.backend}"
+        )
+        # Store prefix for later debugging
+        layer._prefix = layer_prefix
+
         del input_size, output_size
         if not self.quant_config.is_checkpoint_nvfp4_serialized:
             raise ValueError(
@@ -1356,6 +1389,18 @@ class ModelOptNvFp4LinearMethod(LinearMethodBase):
         x: torch.Tensor,
         bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        # Get layer name for debugging
+        layer_prefix = getattr(layer, "_prefix", "unknown")
+
+        logger.info(
+            f"[FP4_DISP_DBG] ModelOptNvFp4LinearMethod.apply: "
+            f"layer={layer_prefix}, backend={self.backend}, "
+            f"x.shape={x.shape}, x.dtype={x.dtype}, "
+            f"weight.shape={layer.weight.shape}, "
+            f"input_size_per_partition={layer.input_size_per_partition}, "
+            f"output_size_per_partition={layer.output_size_per_partition}"
+        )
+
         if self.backend == "marlin":
             return apply_fp4_marlin_linear(
                 input=x,

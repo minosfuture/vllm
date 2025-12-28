@@ -85,6 +85,9 @@ def dequant_fp8(
     return (expert_x_fp32 * expert_x_scales).view(expert_x_fp8.size())
 
 
+LOG_PREFIX = "[FP4_DISP_DBG]"
+
+
 class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
     """
     Prepare/Finalize using DeepEP low-latency kernels.
@@ -239,6 +242,13 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
                 "Quantization is fused with DeepEP nvfp4 dispatch for "
                 "FlashInfer CUTEDSL as VLLM_DEEPEPLL_NVFP4_DISPATCH==1"
             )
+            logger.info(
+                f"{LOG_PREFIX} _do_quant NVFP4_DISPATCH path: "
+                f"x.shape={x.shape}, x.dtype={x.dtype}, "
+                f"x_scales.shape={x_scales.shape}, x_scales.dtype={x_scales.dtype}, "
+                f"num_experts={num_experts}, max_tokens={max_tokens}, "
+                f"hidden_dim={hidden_dim}"
+            )
         else:
             if q_dtype == "nvfp4":
                 q_dtype = None
@@ -311,6 +321,15 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
                 else False
             )
         )
+        logger.info(
+            f"{LOG_PREFIX} prepare_async: a1.shape={a1.shape}, a1.dtype={a1.dtype}, "
+            f"hidden_size={hidden_size}, num_experts={num_experts}, "
+            f"local_num_experts={local_num_experts}, "
+            f"nvfp4_dispatch={nvfp4_dispatch}, use_nvfp4={use_nvfp4}, "
+            f"quant_dtype={quant_config.quant_dtype}, "
+            f"a1_gscale={quant_config.a1_gscale}, a1_scale={quant_config.a1_scale}, "
+            f"max_tokens_per_rank={self.max_tokens_per_rank}"
+        )
         if not use_nvfp4:
             assert not has_per_token_scales, (
                 "low_latency kernels doesn't support dispatching per-token scales"
@@ -343,6 +362,21 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         )
         self.handles[a2a_idx] = handle
 
+        # Log dispatch results
+        if isinstance(expert_x, tuple):
+            logger.info(
+                f"{LOG_PREFIX} low_latency_dispatch result (tuple): "
+                f"expert_x[0].shape={expert_x[0].shape}, expert_x[0].dtype={expert_x[0].dtype}, "
+                f"expert_x[1].shape={expert_x[1].shape}, expert_x[1].dtype={expert_x[1].dtype}, "
+                f"expert_num_tokens={expert_num_tokens}"
+            )
+        else:
+            logger.info(
+                f"{LOG_PREFIX} low_latency_dispatch result: "
+                f"expert_x.shape={expert_x.shape}, expert_x.dtype={expert_x.dtype}, "
+                f"expert_num_tokens={expert_num_tokens}"
+            )
+
         # We need to pass w2_gemm_overlap_args to moe implementation,
         # so return it as an output paramter
         w2_gemm_overlap_args = self._create_sbo_args(local_num_experts, a1.device)
@@ -366,7 +400,29 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         a1_dtype: torch.dtype,
         quant_config: FusedMoEQuantConfig,
     ) -> mk.PrepareResultType:
+        # Log input to _receiver
+        if isinstance(expert_x, tuple):
+            logger.info(
+                f"{LOG_PREFIX} _receiver input (tuple): "
+                f"expert_x[0].shape={expert_x[0].shape}, expert_x[0].dtype={expert_x[0].dtype}, "
+                f"expert_x[1].shape={expert_x[1].shape}, expert_x[1].dtype={expert_x[1].dtype}, "
+                f"quant_dtype={quant_config.quant_dtype}"
+            )
+        else:
+            logger.info(
+                f"{LOG_PREFIX} _receiver input: "
+                f"expert_x.shape={expert_x.shape}, expert_x.dtype={expert_x.dtype}, "
+                f"quant_dtype={quant_config.quant_dtype}"
+            )
+
         expert_x, expert_x_scale = self._do_quant(expert_x, a1_dtype, quant_config)
+
+        # Log output after _do_quant
+        logger.info(
+            f"{LOG_PREFIX} _receiver after _do_quant: "
+            f"expert_x.shape={expert_x.shape}, expert_x.dtype={expert_x.dtype}, "
+            f"expert_x_scale={'None' if expert_x_scale is None else (expert_x_scale.shape, expert_x_scale.dtype)}"
+        )
 
         expert_tokens_meta = mk.ExpertTokensMetadata(
             expert_num_tokens=expert_num_tokens, expert_num_tokens_cpu=None
