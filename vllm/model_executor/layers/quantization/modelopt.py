@@ -1392,6 +1392,7 @@ class ModelOptNvFp4LinearMethod(LinearMethodBase):
         # Get layer name for debugging
         layer_prefix = getattr(layer, "_prefix", "unknown")
 
+        # Log input tensor statistics
         logger.info(
             f"[FP4_DISP_DBG] ModelOptNvFp4LinearMethod.apply: "
             f"layer={layer_prefix}, backend={self.backend}, "
@@ -1400,6 +1401,27 @@ class ModelOptNvFp4LinearMethod(LinearMethodBase):
             f"input_size_per_partition={layer.input_size_per_partition}, "
             f"output_size_per_partition={layer.output_size_per_partition}"
         )
+
+        # Log detailed tensor stats for o_proj layers
+        if "o_proj" in layer_prefix or "self_attn" in layer_prefix:
+            x_float = x.float()
+            logger.info(
+                f"[FP4_DISP_DBG] o_proj INPUT stats: "
+                f"layer={layer_prefix}, "
+                f"min={x_float.min().item():.6f}, "
+                f"max={x_float.max().item():.6f}, "
+                f"mean={x_float.mean().item():.6f}, "
+                f"std={x_float.std().item():.6f}, "
+                f"abs_max={x_float.abs().max().item():.6f}"
+            )
+            # Log scale factors
+            logger.info(
+                f"[FP4_DISP_DBG] o_proj SCALES: "
+                f"layer={layer_prefix}, "
+                f"input_scale_inv={layer.input_scale_inv.item():.6f}, "
+                f"alpha={layer.alpha.item():.6f}, "
+                f"weight_scale_2={layer.weight_scale_2.item():.6f}"
+            )
 
         if self.backend == "marlin":
             return apply_fp4_marlin_linear(
@@ -1442,6 +1464,21 @@ class ModelOptNvFp4LinearMethod(LinearMethodBase):
         else:
             assert self.backend == "cutlass"
             out = cutlass_scaled_fp4_mm(*mm_args)
+
+        # Log output stats for o_proj layers
+        if "o_proj" in layer_prefix or "self_attn" in layer_prefix:
+            out_float = out.float()
+            logger.info(
+                f"[FP4_DISP_DBG] o_proj OUTPUT stats: "
+                f"layer={layer_prefix}, "
+                f"min={out_float.min().item():.6f}, "
+                f"max={out_float.max().item():.6f}, "
+                f"mean={out_float.mean().item():.6f}, "
+                f"std={out_float.std().item():.6f}, "
+                f"abs_max={out_float.abs().max().item():.6f}, "
+                f"has_nan={torch.isnan(out_float).any().item()}, "
+                f"has_inf={torch.isinf(out_float).any().item()}"
+            )
 
         if bias is not None:
             out = out + bias

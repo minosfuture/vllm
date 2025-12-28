@@ -170,6 +170,16 @@ class FlashInferCuteDSLExperts(mk.FusedMoEPermuteExpertsUnpermute):
             f"expert_num_tokens={expert_num_tokens}"
         )
 
+        # Log scale factors for MoE
+        logger.info(
+            f"{LOG_PREFIX} FlashInferCuteDSLExperts SCALES: "
+            f"a1_gscale={self.a1_gscale}, "
+            f"a2_gscale={self.a2_gscale}, "
+            f"g1_alphas_sample={self.g1_alphas[:3].tolist() if self.g1_alphas is not None else None}, "
+            f"g2_alphas_sample={self.g2_alphas[:3].tolist() if self.g2_alphas is not None else None}, "
+            f"input_global_scale={input_global_scale}"
+        )
+
         flashinfer_cutedsl_moe_masked(
             hidden_states=flashinfer_hidden_states,
             input_global_scale=input_global_scale,

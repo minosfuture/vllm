@@ -330,6 +330,18 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
             f"a1_gscale={quant_config.a1_gscale}, a1_scale={quant_config.a1_scale}, "
             f"max_tokens_per_rank={self.max_tokens_per_rank}"
         )
+
+        # Log input tensor stats for MoE
+        a1_float = a1.float()
+        logger.info(
+            f"{LOG_PREFIX} prepare_async INPUT stats: "
+            f"a1_min={a1_float.min().item():.6f}, "
+            f"a1_max={a1_float.max().item():.6f}, "
+            f"a1_mean={a1_float.mean().item():.6f}, "
+            f"a1_std={a1_float.std().item():.6f}, "
+            f"a1_abs_max={a1_float.abs().max().item():.6f}"
+        )
+
         if not use_nvfp4:
             assert not has_per_token_scales, (
                 "low_latency kernels doesn't support dispatching per-token scales"
@@ -465,6 +477,20 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
     ) -> tuple[Callable, Callable]:
         assert isinstance(weight_and_reduce_impl, TopKWeightAndReduceDelegate), (
             "Weight application and reduction happens in the combine kernel."
+        )
+
+        # Log MoE output stats before combine
+        fused_float = fused_expert_output.float()
+        logger.info(
+            f"{LOG_PREFIX} _finalize before combine: "
+            f"fused_expert_output.shape={fused_expert_output.shape}, "
+            f"fused_expert_output.dtype={fused_expert_output.dtype}, "
+            f"fused_min={fused_float.min().item():.6f}, "
+            f"fused_max={fused_float.max().item():.6f}, "
+            f"fused_mean={fused_float.mean().item():.6f}, "
+            f"fused_std={fused_float.std().item():.6f}, "
+            f"has_nan={torch.isnan(fused_float).any().item()}, "
+            f"has_inf={torch.isinf(fused_float).any().item()}"
         )
 
         a2a_idx = dbo_current_ubatch_id()

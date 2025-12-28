@@ -176,19 +176,33 @@ class MultiHeadLatentAttentionWrapper(CustomOp):
             positions=positions,
         )
 
-        # Log before o_proj call
+        # Log before o_proj call with tensor stats
+        attn_out_float = attn_out.float()
         logger.info(
             f"{LOG_PREFIX} MLA.forward_native before o_proj: "
             f"prefix={self.prefix}, "
             f"attn_out.shape={attn_out.shape}, attn_out.dtype={attn_out.dtype}, "
-            f"o_proj_type={type(self.o_proj).__name__}"
+            f"o_proj_type={type(self.o_proj).__name__}, "
+            f"attn_min={attn_out_float.min().item():.6f}, "
+            f"attn_max={attn_out_float.max().item():.6f}, "
+            f"attn_mean={attn_out_float.mean().item():.6f}, "
+            f"attn_std={attn_out_float.std().item():.6f}"
         )
 
         o_proj_out = self.o_proj(attn_out)[0]
 
+        # Log after o_proj with tensor stats
+        out_float = o_proj_out.float()
         logger.info(
             f"{LOG_PREFIX} MLA.forward_native after o_proj: "
-            f"output.shape={o_proj_out.shape}, output.dtype={o_proj_out.dtype}"
+            f"prefix={self.prefix}, "
+            f"output.shape={o_proj_out.shape}, output.dtype={o_proj_out.dtype}, "
+            f"out_min={out_float.min().item():.6f}, "
+            f"out_max={out_float.max().item():.6f}, "
+            f"out_mean={out_float.mean().item():.6f}, "
+            f"out_std={out_float.std().item():.6f}, "
+            f"has_nan={torch.isnan(out_float).any().item()}, "
+            f"has_inf={torch.isinf(out_float).any().item()}"
         )
 
         return o_proj_out
