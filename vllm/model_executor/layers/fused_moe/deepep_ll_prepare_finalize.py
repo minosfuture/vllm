@@ -334,16 +334,24 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         # Log input tensor stats for MoE before dispatch
         a1_float = a1.float()
         a1_flat = a1_float.flatten()
+        num_samples = min(10, len(a1_flat))
+        sample_indices = [int(i * len(a1_flat) / num_samples) for i in range(num_samples)]
+        samples = [a1_flat[idx].item() for idx in sample_indices]
+        has_nan = torch.isnan(a1_float).any().item()
+        has_inf = torch.isinf(a1_float).any().item()
+        nan_count = torch.isnan(a1_float).sum().item()
+        inf_count = torch.isinf(a1_float).sum().item()
+        nonzero_count = (a1_float != 0).sum().item()
         logger.info(
             f"{LOG_PREFIX} before_dispatch: "
             f"shape={a1.shape}, dtype={a1.dtype}, "
-            f"min={a1_float.min().item():.6f}, "
-            f"max={a1_float.max().item():.6f}, "
-            f"mean={a1_float.mean().item():.6f}, "
-            f"std={a1_float.std().item():.6f}, "
-            f"samples=[{a1_flat[0].item():.6f},{a1_flat[len(a1_flat)//4].item():.6f},{a1_flat[len(a1_flat)//2].item():.6f},{a1_flat[-1].item():.6f}], "
+            f"min={a1_float.min().item():.6f}, max={a1_float.max().item():.6f}, "
+            f"mean={a1_float.mean().item():.6f}, std={a1_float.std().item():.6f}, "
+            f"has_nan={has_nan}, has_inf={has_inf}, nan_count={nan_count}, inf_count={inf_count}, "
+            f"nonzero_count={nonzero_count}, total={a1_flat.numel()}, "
+            f"samples={[f'{s:.6f}' for s in samples]}, "
             f"nvfp4_dispatch={nvfp4_dispatch}, "
-            f"a1_gscale_sample={quant_config.a1_gscale[:3].tolist() if quant_config.a1_gscale is not None else None}"
+            f"a1_gscale={quant_config.a1_gscale[:10].tolist() if quant_config.a1_gscale is not None and len(quant_config.a1_gscale) >= 10 else (quant_config.a1_gscale.tolist() if quant_config.a1_gscale is not None else None)}"
         )
 
         if not use_nvfp4:
@@ -383,26 +391,58 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
             # FP4 dispatch path - expert_x[0] is quantized data, expert_x[1] is scales
             ex0_flat = expert_x[0].flatten().float()
             ex1_flat = expert_x[1].flatten().float()
+            num_samples = min(10, len(ex0_flat))
+            sample_indices_0 = [int(i * len(ex0_flat) / num_samples) for i in range(num_samples)]
+            data_samples = [ex0_flat[idx].item() for idx in sample_indices_0]
+            num_samples_1 = min(10, len(ex1_flat))
+            sample_indices_1 = [int(i * len(ex1_flat) / num_samples_1) for i in range(num_samples_1)]
+            scale_samples = [ex1_flat[idx].item() for idx in sample_indices_1]
+            # Stats for data (ex0_flat)
+            data_nan_count = torch.isnan(ex0_flat).sum().item()
+            data_inf_count = torch.isinf(ex0_flat).sum().item()
+            data_nonzero = (ex0_flat != 0).sum().item()
+            data_min = ex0_flat.min().item()
+            data_max = ex0_flat.max().item()
+            data_mean = ex0_flat.mean().item()
+            data_std = ex0_flat.std().item()
+            # Stats for scales (ex1_flat)
+            scale_nan_count = torch.isnan(ex1_flat).sum().item()
+            scale_inf_count = torch.isinf(ex1_flat).sum().item()
+            scale_nonzero = (ex1_flat != 0).sum().item()
+            scale_negative = (ex1_flat < 0).sum().item()
             logger.info(
                 f"{LOG_PREFIX} after_dispatch (tuple): "
                 f"data_shape={expert_x[0].shape}, data_dtype={expert_x[0].dtype}, "
                 f"scale_shape={expert_x[1].shape}, scale_dtype={expert_x[1].dtype}, "
-                f"data_samples=[{ex0_flat[0].item():.6f},{ex0_flat[len(ex0_flat)//4].item():.6f},{ex0_flat[len(ex0_flat)//2].item():.6f},{ex0_flat[-1].item():.6f}], "
+                f"data_min={data_min:.6f}, data_max={data_max:.6f}, data_mean={data_mean:.6f}, data_std={data_std:.6f}, "
+                f"data_nonzero={data_nonzero}, data_nan_count={data_nan_count}, data_inf_count={data_inf_count}, data_total={ex0_flat.numel()}, "
+                f"data_samples={[f'{s:.6f}' for s in data_samples]}, "
                 f"scale_min={ex1_flat.min().item():.6f}, scale_max={ex1_flat.max().item():.6f}, "
-                f"scale_samples=[{ex1_flat[0].item():.6f},{ex1_flat[len(ex1_flat)//4].item():.6f},{ex1_flat[len(ex1_flat)//2].item():.6f},{ex1_flat[-1].item():.6f}]"
+                f"scale_mean={ex1_flat.mean().item():.6f}, scale_std={ex1_flat.std().item():.6f}, "
+                f"scale_nan_count={scale_nan_count}, scale_inf_count={scale_inf_count}, "
+                f"scale_nonzero={scale_nonzero}, scale_negative={scale_negative}, scale_total={ex1_flat.numel()}, "
+                f"scale_samples={[f'{s:.6f}' for s in scale_samples]}"
             )
         else:
             # BF16 dispatch path
             ex_float = expert_x.float()
             ex_flat = ex_float.flatten()
+            num_samples = min(10, len(ex_flat))
+            sample_indices = [int(i * len(ex_flat) / num_samples) for i in range(num_samples)]
+            samples = [ex_flat[idx].item() for idx in sample_indices]
+            has_nan = torch.isnan(ex_float).any().item()
+            has_inf = torch.isinf(ex_float).any().item()
+            nan_count = torch.isnan(ex_float).sum().item()
+            inf_count = torch.isinf(ex_float).sum().item()
+            nonzero_count = (ex_float != 0).sum().item()
             logger.info(
                 f"{LOG_PREFIX} after_dispatch (tensor): "
                 f"shape={expert_x.shape}, dtype={expert_x.dtype}, "
-                f"min={ex_float.min().item():.6f}, "
-                f"max={ex_float.max().item():.6f}, "
-                f"mean={ex_float.mean().item():.6f}, "
-                f"std={ex_float.std().item():.6f}, "
-                f"samples=[{ex_flat[0].item():.6f},{ex_flat[len(ex_flat)//4].item():.6f},{ex_flat[len(ex_flat)//2].item():.6f},{ex_flat[-1].item():.6f}]"
+                f"min={ex_float.min().item():.6f}, max={ex_float.max().item():.6f}, "
+                f"mean={ex_float.mean().item():.6f}, std={ex_float.std().item():.6f}, "
+                f"has_nan={has_nan}, has_inf={has_inf}, nan_count={nan_count}, inf_count={inf_count}, "
+                f"nonzero_count={nonzero_count}, total={ex_flat.numel()}, "
+                f"samples={[f'{s:.6f}' for s in samples]}"
             )
 
         # We need to pass w2_gemm_overlap_args to moe implementation,
@@ -498,16 +538,22 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         # Log MoE output stats before combine with samples
         fused_float = fused_expert_output.float()
         fused_flat = fused_float.flatten()
+        num_samples = min(10, len(fused_flat))
+        sample_indices = [int(i * len(fused_flat) / num_samples) for i in range(num_samples)]
+        samples = [fused_flat[idx].item() for idx in sample_indices]
+        has_nan = torch.isnan(fused_float).any().item()
+        has_inf = torch.isinf(fused_float).any().item()
+        nan_count = torch.isnan(fused_float).sum().item()
+        inf_count = torch.isinf(fused_float).sum().item()
+        nonzero_count = (fused_float != 0).sum().item()
         logger.info(
             f"{LOG_PREFIX} before_combine: "
             f"shape={fused_expert_output.shape}, dtype={fused_expert_output.dtype}, "
-            f"min={fused_float.min().item():.6f}, "
-            f"max={fused_float.max().item():.6f}, "
-            f"mean={fused_float.mean().item():.6f}, "
-            f"std={fused_float.std().item():.6f}, "
-            f"has_nan={torch.isnan(fused_float).any().item()}, "
-            f"has_inf={torch.isinf(fused_float).any().item()}, "
-            f"samples=[{fused_flat[0].item():.6f},{fused_flat[len(fused_flat)//4].item():.6f},{fused_flat[len(fused_flat)//2].item():.6f},{fused_flat[-1].item():.6f}]"
+            f"min={fused_float.min().item():.6f}, max={fused_float.max().item():.6f}, "
+            f"mean={fused_float.mean().item():.6f}, std={fused_float.std().item():.6f}, "
+            f"has_nan={has_nan}, has_inf={has_inf}, nan_count={nan_count}, inf_count={inf_count}, "
+            f"nonzero_count={nonzero_count}, total={fused_flat.numel()}, "
+            f"samples={[f'{s:.6f}' for s in samples]}"
         )
 
         a2a_idx = dbo_current_ubatch_id()
@@ -558,16 +604,22 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         # Log after combine with tensor stats and samples
         out_float = output.float()
         out_flat = out_float.flatten()
+        num_samples = min(10, len(out_flat))
+        sample_indices = [int(i * len(out_flat) / num_samples) for i in range(num_samples)]
+        samples = [out_flat[idx].item() for idx in sample_indices]
+        has_nan = torch.isnan(out_float).any().item()
+        has_inf = torch.isinf(out_float).any().item()
+        nan_count = torch.isnan(out_float).sum().item()
+        inf_count = torch.isinf(out_float).sum().item()
+        nonzero_count = (out_float != 0).sum().item()
         logger.info(
             f"{LOG_PREFIX} after_combine: "
             f"shape={output.shape}, dtype={output.dtype}, "
-            f"min={out_float.min().item():.6f}, "
-            f"max={out_float.max().item():.6f}, "
-            f"mean={out_float.mean().item():.6f}, "
-            f"std={out_float.std().item():.6f}, "
-            f"has_nan={torch.isnan(out_float).any().item()}, "
-            f"has_inf={torch.isinf(out_float).any().item()}, "
-            f"samples=[{out_flat[0].item():.6f},{out_flat[len(out_flat)//4].item():.6f},{out_flat[len(out_flat)//2].item():.6f},{out_flat[-1].item():.6f}]"
+            f"min={out_float.min().item():.6f}, max={out_float.max().item():.6f}, "
+            f"mean={out_float.mean().item():.6f}, std={out_float.std().item():.6f}, "
+            f"has_nan={has_nan}, has_inf={has_inf}, nan_count={nan_count}, inf_count={inf_count}, "
+            f"nonzero_count={nonzero_count}, total={out_flat.numel()}, "
+            f"samples={[f'{s:.6f}' for s in samples]}"
         )
 
         return recv_hook, lambda: self._sbo_wait_stream()

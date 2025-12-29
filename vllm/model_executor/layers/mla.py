@@ -179,15 +179,23 @@ class MultiHeadLatentAttentionWrapper(CustomOp):
         # Log before o_proj call with tensor stats and samples
         attn_out_float = attn_out.float()
         attn_flat = attn_out_float.flatten()
+        num_samples = min(10, len(attn_flat))
+        sample_indices = [int(i * len(attn_flat) / num_samples) for i in range(num_samples)]
+        samples = [attn_flat[idx].item() for idx in sample_indices]
+        has_nan = torch.isnan(attn_out_float).any().item()
+        has_inf = torch.isinf(attn_out_float).any().item()
+        nan_count = torch.isnan(attn_out_float).sum().item()
+        inf_count = torch.isinf(attn_out_float).sum().item()
+        nonzero_count = (attn_out_float != 0).sum().item()
         logger.info(
             f"{LOG_PREFIX} MLA before_o_proj: "
             f"prefix={self.prefix}, "
             f"shape={attn_out.shape}, dtype={attn_out.dtype}, "
-            f"min={attn_out_float.min().item():.6f}, "
-            f"max={attn_out_float.max().item():.6f}, "
-            f"mean={attn_out_float.mean().item():.6f}, "
-            f"std={attn_out_float.std().item():.6f}, "
-            f"samples=[{attn_flat[0].item():.6f},{attn_flat[len(attn_flat)//4].item():.6f},{attn_flat[len(attn_flat)//2].item():.6f},{attn_flat[-1].item():.6f}]"
+            f"min={attn_out_float.min().item():.6f}, max={attn_out_float.max().item():.6f}, "
+            f"mean={attn_out_float.mean().item():.6f}, std={attn_out_float.std().item():.6f}, "
+            f"has_nan={has_nan}, has_inf={has_inf}, nan_count={nan_count}, inf_count={inf_count}, "
+            f"nonzero_count={nonzero_count}, total={attn_flat.numel()}, "
+            f"samples={[f'{s:.6f}' for s in samples]}"
         )
 
         o_proj_out = self.o_proj(attn_out)[0]
@@ -195,17 +203,23 @@ class MultiHeadLatentAttentionWrapper(CustomOp):
         # Log after o_proj with tensor stats and samples
         out_float = o_proj_out.float()
         out_flat = out_float.flatten()
+        num_samples = min(10, len(out_flat))
+        sample_indices = [int(i * len(out_flat) / num_samples) for i in range(num_samples)]
+        samples = [out_flat[idx].item() for idx in sample_indices]
+        has_nan = torch.isnan(out_float).any().item()
+        has_inf = torch.isinf(out_float).any().item()
+        nan_count = torch.isnan(out_float).sum().item()
+        inf_count = torch.isinf(out_float).sum().item()
+        nonzero_count = (out_float != 0).sum().item()
         logger.info(
             f"{LOG_PREFIX} MLA after_o_proj: "
             f"prefix={self.prefix}, "
             f"shape={o_proj_out.shape}, dtype={o_proj_out.dtype}, "
-            f"min={out_float.min().item():.6f}, "
-            f"max={out_float.max().item():.6f}, "
-            f"mean={out_float.mean().item():.6f}, "
-            f"std={out_float.std().item():.6f}, "
-            f"has_nan={torch.isnan(out_float).any().item()}, "
-            f"has_inf={torch.isinf(out_float).any().item()}, "
-            f"samples=[{out_flat[0].item():.6f},{out_flat[len(out_flat)//4].item():.6f},{out_flat[len(out_flat)//2].item():.6f},{out_flat[-1].item():.6f}]"
+            f"min={out_float.min().item():.6f}, max={out_float.max().item():.6f}, "
+            f"mean={out_float.mean().item():.6f}, std={out_float.std().item():.6f}, "
+            f"has_nan={has_nan}, has_inf={has_inf}, nan_count={nan_count}, inf_count={inf_count}, "
+            f"nonzero_count={nonzero_count}, total={out_flat.numel()}, "
+            f"samples={[f'{s:.6f}' for s in samples]}"
         )
 
         return o_proj_out
