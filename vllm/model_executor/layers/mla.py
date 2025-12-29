@@ -176,33 +176,36 @@ class MultiHeadLatentAttentionWrapper(CustomOp):
             positions=positions,
         )
 
-        # Log before o_proj call with tensor stats
+        # Log before o_proj call with tensor stats and samples
         attn_out_float = attn_out.float()
+        attn_flat = attn_out_float.flatten()
         logger.info(
-            f"{LOG_PREFIX} MLA.forward_native before o_proj: "
+            f"{LOG_PREFIX} MLA before_o_proj: "
             f"prefix={self.prefix}, "
-            f"attn_out.shape={attn_out.shape}, attn_out.dtype={attn_out.dtype}, "
-            f"o_proj_type={type(self.o_proj).__name__}, "
-            f"attn_min={attn_out_float.min().item():.6f}, "
-            f"attn_max={attn_out_float.max().item():.6f}, "
-            f"attn_mean={attn_out_float.mean().item():.6f}, "
-            f"attn_std={attn_out_float.std().item():.6f}"
+            f"shape={attn_out.shape}, dtype={attn_out.dtype}, "
+            f"min={attn_out_float.min().item():.6f}, "
+            f"max={attn_out_float.max().item():.6f}, "
+            f"mean={attn_out_float.mean().item():.6f}, "
+            f"std={attn_out_float.std().item():.6f}, "
+            f"samples=[{attn_flat[0].item():.6f},{attn_flat[len(attn_flat)//4].item():.6f},{attn_flat[len(attn_flat)//2].item():.6f},{attn_flat[-1].item():.6f}]"
         )
 
         o_proj_out = self.o_proj(attn_out)[0]
 
-        # Log after o_proj with tensor stats
+        # Log after o_proj with tensor stats and samples
         out_float = o_proj_out.float()
+        out_flat = out_float.flatten()
         logger.info(
-            f"{LOG_PREFIX} MLA.forward_native after o_proj: "
+            f"{LOG_PREFIX} MLA after_o_proj: "
             f"prefix={self.prefix}, "
-            f"output.shape={o_proj_out.shape}, output.dtype={o_proj_out.dtype}, "
-            f"out_min={out_float.min().item():.6f}, "
-            f"out_max={out_float.max().item():.6f}, "
-            f"out_mean={out_float.mean().item():.6f}, "
-            f"out_std={out_float.std().item():.6f}, "
+            f"shape={o_proj_out.shape}, dtype={o_proj_out.dtype}, "
+            f"min={out_float.min().item():.6f}, "
+            f"max={out_float.max().item():.6f}, "
+            f"mean={out_float.mean().item():.6f}, "
+            f"std={out_float.std().item():.6f}, "
             f"has_nan={torch.isnan(out_float).any().item()}, "
-            f"has_inf={torch.isinf(out_float).any().item()}"
+            f"has_inf={torch.isinf(out_float).any().item()}, "
+            f"samples=[{out_flat[0].item():.6f},{out_flat[len(out_flat)//4].item():.6f},{out_flat[len(out_flat)//2].item():.6f},{out_flat[-1].item():.6f}]"
         )
 
         return o_proj_out

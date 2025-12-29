@@ -331,15 +331,19 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
             f"max_tokens_per_rank={self.max_tokens_per_rank}"
         )
 
-        # Log input tensor stats for MoE
+        # Log input tensor stats for MoE before dispatch
         a1_float = a1.float()
+        a1_flat = a1_float.flatten()
         logger.info(
-            f"{LOG_PREFIX} prepare_async INPUT stats: "
-            f"a1_min={a1_float.min().item():.6f}, "
-            f"a1_max={a1_float.max().item():.6f}, "
-            f"a1_mean={a1_float.mean().item():.6f}, "
-            f"a1_std={a1_float.std().item():.6f}, "
-            f"a1_abs_max={a1_float.abs().max().item():.6f}"
+            f"{LOG_PREFIX} before_dispatch: "
+            f"shape={a1.shape}, dtype={a1.dtype}, "
+            f"min={a1_float.min().item():.6f}, "
+            f"max={a1_float.max().item():.6f}, "
+            f"mean={a1_float.mean().item():.6f}, "
+            f"std={a1_float.std().item():.6f}, "
+            f"samples=[{a1_flat[0].item():.6f},{a1_flat[len(a1_flat)//4].item():.6f},{a1_flat[len(a1_flat)//2].item():.6f},{a1_flat[-1].item():.6f}], "
+            f"nvfp4_dispatch={nvfp4_dispatch}, "
+            f"a1_gscale_sample={quant_config.a1_gscale[:3].tolist() if quant_config.a1_gscale is not None else None}"
         )
 
         if not use_nvfp4:
@@ -374,19 +378,31 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         )
         self.handles[a2a_idx] = handle
 
-        # Log dispatch results
+        # Log dispatch results with tensor stats and samples
         if isinstance(expert_x, tuple):
+            # FP4 dispatch path - expert_x[0] is quantized data, expert_x[1] is scales
+            ex0_flat = expert_x[0].flatten().float()
+            ex1_flat = expert_x[1].flatten().float()
             logger.info(
-                f"{LOG_PREFIX} low_latency_dispatch result (tuple): "
-                f"expert_x[0].shape={expert_x[0].shape}, expert_x[0].dtype={expert_x[0].dtype}, "
-                f"expert_x[1].shape={expert_x[1].shape}, expert_x[1].dtype={expert_x[1].dtype}, "
-                f"expert_num_tokens={expert_num_tokens}"
+                f"{LOG_PREFIX} after_dispatch (tuple): "
+                f"data_shape={expert_x[0].shape}, data_dtype={expert_x[0].dtype}, "
+                f"scale_shape={expert_x[1].shape}, scale_dtype={expert_x[1].dtype}, "
+                f"data_samples=[{ex0_flat[0].item():.6f},{ex0_flat[len(ex0_flat)//4].item():.6f},{ex0_flat[len(ex0_flat)//2].item():.6f},{ex0_flat[-1].item():.6f}], "
+                f"scale_min={ex1_flat.min().item():.6f}, scale_max={ex1_flat.max().item():.6f}, "
+                f"scale_samples=[{ex1_flat[0].item():.6f},{ex1_flat[len(ex1_flat)//4].item():.6f},{ex1_flat[len(ex1_flat)//2].item():.6f},{ex1_flat[-1].item():.6f}]"
             )
         else:
+            # BF16 dispatch path
+            ex_float = expert_x.float()
+            ex_flat = ex_float.flatten()
             logger.info(
-                f"{LOG_PREFIX} low_latency_dispatch result: "
-                f"expert_x.shape={expert_x.shape}, expert_x.dtype={expert_x.dtype}, "
-                f"expert_num_tokens={expert_num_tokens}"
+                f"{LOG_PREFIX} after_dispatch (tensor): "
+                f"shape={expert_x.shape}, dtype={expert_x.dtype}, "
+                f"min={ex_float.min().item():.6f}, "
+                f"max={ex_float.max().item():.6f}, "
+                f"mean={ex_float.mean().item():.6f}, "
+                f"std={ex_float.std().item():.6f}, "
+                f"samples=[{ex_flat[0].item():.6f},{ex_flat[len(ex_flat)//4].item():.6f},{ex_flat[len(ex_flat)//2].item():.6f},{ex_flat[-1].item():.6f}]"
             )
 
         # We need to pass w2_gemm_overlap_args to moe implementation,
@@ -479,18 +495,19 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
             "Weight application and reduction happens in the combine kernel."
         )
 
-        # Log MoE output stats before combine
+        # Log MoE output stats before combine with samples
         fused_float = fused_expert_output.float()
+        fused_flat = fused_float.flatten()
         logger.info(
-            f"{LOG_PREFIX} _finalize before combine: "
-            f"fused_expert_output.shape={fused_expert_output.shape}, "
-            f"fused_expert_output.dtype={fused_expert_output.dtype}, "
-            f"fused_min={fused_float.min().item():.6f}, "
-            f"fused_max={fused_float.max().item():.6f}, "
-            f"fused_mean={fused_float.mean().item():.6f}, "
-            f"fused_std={fused_float.std().item():.6f}, "
+            f"{LOG_PREFIX} before_combine: "
+            f"shape={fused_expert_output.shape}, dtype={fused_expert_output.dtype}, "
+            f"min={fused_float.min().item():.6f}, "
+            f"max={fused_float.max().item():.6f}, "
+            f"mean={fused_float.mean().item():.6f}, "
+            f"std={fused_float.std().item():.6f}, "
             f"has_nan={torch.isnan(fused_float).any().item()}, "
-            f"has_inf={torch.isinf(fused_float).any().item()}"
+            f"has_inf={torch.isinf(fused_float).any().item()}, "
+            f"samples=[{fused_flat[0].item():.6f},{fused_flat[len(fused_flat)//4].item():.6f},{fused_flat[len(fused_flat)//2].item():.6f},{fused_flat[-1].item():.6f}]"
         )
 
         a2a_idx = dbo_current_ubatch_id()
@@ -537,6 +554,21 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
                     else {}
                 ),
             )
+
+        # Log after combine with tensor stats and samples
+        out_float = output.float()
+        out_flat = out_float.flatten()
+        logger.info(
+            f"{LOG_PREFIX} after_combine: "
+            f"shape={output.shape}, dtype={output.dtype}, "
+            f"min={out_float.min().item():.6f}, "
+            f"max={out_float.max().item():.6f}, "
+            f"mean={out_float.mean().item():.6f}, "
+            f"std={out_float.std().item():.6f}, "
+            f"has_nan={torch.isnan(out_float).any().item()}, "
+            f"has_inf={torch.isinf(out_float).any().item()}, "
+            f"samples=[{out_flat[0].item():.6f},{out_flat[len(out_flat)//4].item():.6f},{out_flat[len(out_flat)//2].item():.6f},{out_flat[-1].item():.6f}]"
+        )
 
         return recv_hook, lambda: self._sbo_wait_stream()
 

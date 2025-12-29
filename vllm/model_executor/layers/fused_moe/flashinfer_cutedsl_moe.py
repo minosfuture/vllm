@@ -159,26 +159,34 @@ class FlashInferCuteDSLExperts(mk.FusedMoEPermuteExpertsUnpermute):
             else hidden_states
         )
 
-        # Log apply inputs
-        logger.info(
-            f"{LOG_PREFIX} FlashInferCuteDSLExperts.apply: "
-            f"hidden_states.shape={hidden_states.shape}, hidden_states.dtype={hidden_states.dtype}, "
-            f"output.shape={output.shape}, output.dtype={output.dtype}, "
-            f"w1.shape={w1.shape}, w2.shape={w2.shape}, "
-            f"NVFP4_DISPATCH={envs.VLLM_DEEPEPLL_NVFP4_DISPATCH}, "
-            f"a1q_scale={'None' if a1q_scale is None else (a1q_scale.shape, a1q_scale.dtype)}, "
-            f"expert_num_tokens={expert_num_tokens}"
-        )
-
-        # Log scale factors for MoE
-        logger.info(
-            f"{LOG_PREFIX} FlashInferCuteDSLExperts SCALES: "
-            f"a1_gscale={self.a1_gscale}, "
-            f"a2_gscale={self.a2_gscale}, "
-            f"g1_alphas_sample={self.g1_alphas[:3].tolist() if self.g1_alphas is not None else None}, "
-            f"g2_alphas_sample={self.g2_alphas[:3].tolist() if self.g2_alphas is not None else None}, "
-            f"input_global_scale={input_global_scale}"
-        )
+        # Log before fused gemm with tensor stats and samples
+        if isinstance(flashinfer_hidden_states, tuple):
+            hs_data = flashinfer_hidden_states[0].flatten().float()
+            hs_scale = flashinfer_hidden_states[1].flatten().float()
+            logger.info(
+                f"{LOG_PREFIX} before_fused_gemm (tuple): "
+                f"data_shape={flashinfer_hidden_states[0].shape}, data_dtype={flashinfer_hidden_states[0].dtype}, "
+                f"scale_shape={flashinfer_hidden_states[1].shape}, scale_dtype={flashinfer_hidden_states[1].dtype}, "
+                f"data_samples=[{hs_data[0].item():.6f},{hs_data[len(hs_data)//4].item():.6f},{hs_data[len(hs_data)//2].item():.6f},{hs_data[-1].item():.6f}], "
+                f"scale_min={hs_scale.min().item():.6f}, scale_max={hs_scale.max().item():.6f}, "
+                f"scale_samples=[{hs_scale[0].item():.6f},{hs_scale[len(hs_scale)//4].item():.6f},{hs_scale[len(hs_scale)//2].item():.6f},{hs_scale[-1].item():.6f}], "
+                f"a1_gscale_sample={self.a1_gscale[:3].tolist() if self.a1_gscale is not None else None}, "
+                f"a2_gscale_sample={self.a2_gscale[:3].tolist() if self.a2_gscale is not None else None}"
+            )
+        else:
+            hs_float = flashinfer_hidden_states.float()
+            hs_flat = hs_float.flatten()
+            logger.info(
+                f"{LOG_PREFIX} before_fused_gemm (tensor): "
+                f"shape={flashinfer_hidden_states.shape}, dtype={flashinfer_hidden_states.dtype}, "
+                f"min={hs_float.min().item():.6f}, "
+                f"max={hs_float.max().item():.6f}, "
+                f"mean={hs_float.mean().item():.6f}, "
+                f"std={hs_float.std().item():.6f}, "
+                f"samples=[{hs_flat[0].item():.6f},{hs_flat[len(hs_flat)//4].item():.6f},{hs_flat[len(hs_flat)//2].item():.6f},{hs_flat[-1].item():.6f}], "
+                f"input_global_scale_sample={input_global_scale[:3].tolist() if input_global_scale is not None else None}, "
+                f"a2_gscale_sample={self.a2_gscale[:3].tolist() if self.a2_gscale is not None else None}"
+            )
 
         flashinfer_cutedsl_moe_masked(
             hidden_states=flashinfer_hidden_states,
@@ -194,6 +202,21 @@ class FlashInferCuteDSLExperts(mk.FusedMoEPermuteExpertsUnpermute):
             workspace=workspace2,
             out=output,
             w2_gemm_overlap_args=w2_gemm_overlap_args,
+        )
+
+        # Log after fused gemm with tensor stats and samples
+        out_float = output.float()
+        out_flat = out_float.flatten()
+        logger.info(
+            f"{LOG_PREFIX} after_fused_gemm: "
+            f"shape={output.shape}, dtype={output.dtype}, "
+            f"min={out_float.min().item():.6f}, "
+            f"max={out_float.max().item():.6f}, "
+            f"mean={out_float.mean().item():.6f}, "
+            f"std={out_float.std().item():.6f}, "
+            f"has_nan={torch.isnan(out_float).any().item()}, "
+            f"has_inf={torch.isinf(out_float).any().item()}, "
+            f"samples=[{out_flat[0].item():.6f},{out_flat[len(out_flat)//4].item():.6f},{out_flat[len(out_flat)//2].item():.6f},{out_flat[-1].item():.6f}]"
         )
 
 
