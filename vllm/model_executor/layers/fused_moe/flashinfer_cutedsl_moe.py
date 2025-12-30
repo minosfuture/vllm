@@ -159,67 +159,6 @@ class FlashInferCuteDSLExperts(mk.FusedMoEPermuteExpertsUnpermute):
             else hidden_states
         )
 
-        # Log before fused gemm with tensor stats and samples
-        if isinstance(flashinfer_hidden_states, tuple):
-            hs_data = flashinfer_hidden_states[0].flatten().float()
-            hs_scale = flashinfer_hidden_states[1].flatten().float()
-            num_samples_data = min(10, len(hs_data))
-            sample_indices_data = [int(i * len(hs_data) / num_samples_data) for i in range(num_samples_data)]
-            data_samples = [hs_data[idx].item() for idx in sample_indices_data]
-            num_samples_scale = min(10, len(hs_scale))
-            sample_indices_scale = [int(i * len(hs_scale) / num_samples_scale) for i in range(num_samples_scale)]
-            scale_samples = [hs_scale[idx].item() for idx in sample_indices_scale]
-            # Stats for data (hs_data)
-            data_nan_count = torch.isnan(hs_data).sum().item()
-            data_inf_count = torch.isinf(hs_data).sum().item()
-            data_nonzero = (hs_data != 0).sum().item()
-            data_min = hs_data.min().item()
-            data_max = hs_data.max().item()
-            data_mean = hs_data.mean().item()
-            data_std = hs_data.std().item()
-            # Stats for scales (hs_scale)
-            scale_nan_count = torch.isnan(hs_scale).sum().item()
-            scale_inf_count = torch.isinf(hs_scale).sum().item()
-            scale_nonzero = (hs_scale != 0).sum().item()
-            scale_negative = (hs_scale < 0).sum().item()
-            logger.info(
-                f"{LOG_PREFIX} before_fused_gemm (tuple): "
-                f"data_shape={flashinfer_hidden_states[0].shape}, data_dtype={flashinfer_hidden_states[0].dtype}, "
-                f"scale_shape={flashinfer_hidden_states[1].shape}, scale_dtype={flashinfer_hidden_states[1].dtype}, "
-                f"data_min={data_min:.6f}, data_max={data_max:.6f}, data_mean={data_mean:.6f}, data_std={data_std:.6f}, "
-                f"data_nonzero={data_nonzero}, data_nan_count={data_nan_count}, data_inf_count={data_inf_count}, data_total={hs_data.numel()}, "
-                f"data_samples={[f'{s:.6f}' for s in data_samples]}, "
-                f"scale_min={hs_scale.min().item():.6f}, scale_max={hs_scale.max().item():.6f}, "
-                f"scale_mean={hs_scale.mean().item():.6f}, scale_std={hs_scale.std().item():.6f}, "
-                f"scale_nan_count={scale_nan_count}, scale_inf_count={scale_inf_count}, "
-                f"scale_nonzero={scale_nonzero}, scale_negative={scale_negative}, scale_total={hs_scale.numel()}, "
-                f"scale_samples={[f'{s:.6f}' for s in scale_samples]}, "
-                f"a1_gscale={self.a1_gscale[:10].tolist() if self.a1_gscale is not None and len(self.a1_gscale) >= 10 else (self.a1_gscale.tolist() if self.a1_gscale is not None else None)}, "
-                f"a2_gscale={self.a2_gscale[:10].tolist() if self.a2_gscale is not None and len(self.a2_gscale) >= 10 else (self.a2_gscale.tolist() if self.a2_gscale is not None else None)}"
-            )
-        else:
-            hs_float = flashinfer_hidden_states.float()
-            hs_flat = hs_float.flatten()
-            num_samples = min(10, len(hs_flat))
-            sample_indices = [int(i * len(hs_flat) / num_samples) for i in range(num_samples)]
-            samples = [hs_flat[idx].item() for idx in sample_indices]
-            has_nan = torch.isnan(hs_float).any().item()
-            has_inf = torch.isinf(hs_float).any().item()
-            nan_count = torch.isnan(hs_float).sum().item()
-            inf_count = torch.isinf(hs_float).sum().item()
-            nonzero_count = (hs_float != 0).sum().item()
-            logger.info(
-                f"{LOG_PREFIX} before_fused_gemm (tensor): "
-                f"shape={flashinfer_hidden_states.shape}, dtype={flashinfer_hidden_states.dtype}, "
-                f"min={hs_float.min().item():.6f}, max={hs_float.max().item():.6f}, "
-                f"mean={hs_float.mean().item():.6f}, std={hs_float.std().item():.6f}, "
-                f"has_nan={has_nan}, has_inf={has_inf}, nan_count={nan_count}, inf_count={inf_count}, "
-                f"nonzero_count={nonzero_count}, total={hs_flat.numel()}, "
-                f"samples={[f'{s:.6f}' for s in samples]}, "
-                f"input_global_scale={input_global_scale[:10].tolist() if input_global_scale is not None and len(input_global_scale) >= 10 else (input_global_scale.tolist() if input_global_scale is not None else None)}, "
-                f"a2_gscale={self.a2_gscale[:10].tolist() if self.a2_gscale is not None and len(self.a2_gscale) >= 10 else (self.a2_gscale.tolist() if self.a2_gscale is not None else None)}"
-            )
-
         flashinfer_cutedsl_moe_masked(
             hidden_states=flashinfer_hidden_states,
             input_global_scale=input_global_scale,
@@ -234,27 +173,6 @@ class FlashInferCuteDSLExperts(mk.FusedMoEPermuteExpertsUnpermute):
             workspace=workspace2,
             out=output,
             w2_gemm_overlap_args=w2_gemm_overlap_args,
-        )
-
-        # Log after fused gemm with tensor stats and samples
-        out_float = output.float()
-        out_flat = out_float.flatten()
-        num_samples = min(10, len(out_flat))
-        sample_indices = [int(i * len(out_flat) / num_samples) for i in range(num_samples)]
-        samples = [out_flat[idx].item() for idx in sample_indices]
-        has_nan = torch.isnan(out_float).any().item()
-        has_inf = torch.isinf(out_float).any().item()
-        nan_count = torch.isnan(out_float).sum().item()
-        inf_count = torch.isinf(out_float).sum().item()
-        nonzero_count = (out_float != 0).sum().item()
-        logger.info(
-            f"{LOG_PREFIX} after_fused_gemm: "
-            f"shape={output.shape}, dtype={output.dtype}, "
-            f"min={out_float.min().item():.6f}, max={out_float.max().item():.6f}, "
-            f"mean={out_float.mean().item():.6f}, std={out_float.std().item():.6f}, "
-            f"has_nan={has_nan}, has_inf={has_inf}, nan_count={nan_count}, inf_count={inf_count}, "
-            f"nonzero_count={nonzero_count}, total={out_flat.numel()}, "
-            f"samples={[f'{s:.6f}' for s in samples]}"
         )
 
 
@@ -400,6 +318,27 @@ def flashinfer_cutedsl_moe_masked(
     else:
         c_dtype = get_cute_dtype(hidden_states)
 
+    # Log before Gemm1
+    aq_float = aq.float().flatten()
+    aq_sf_float = aq_sf.view(torch.uint8).float().flatten()
+    num_samples = min(10, len(aq_float))
+    sample_indices = [int(i * len(aq_float) / num_samples) for i in range(num_samples)]
+    aq_samples = [aq_float[idx].item() for idx in sample_indices]
+    sf_sample_indices = [
+        int(i * len(aq_sf_float) / num_samples) for i in range(num_samples)
+    ]
+    sf_samples = [aq_sf_float[idx].item() for idx in sf_sample_indices]
+    logger.info(
+        f"{LOG_PREFIX} before_gemm1: "
+        f"aq.shape={aq.shape}, aq.dtype={aq.dtype}, "
+        f"aq_sf.shape={aq_sf.shape}, aq_sf.dtype={aq_sf.dtype}, "
+        f"aq_min={aq_float.min().item():.6f}, aq_max={aq_float.max().item():.6f}, "
+        f"aq_mean={aq_float.mean().item():.6f}, aq_nonzero={(aq_float != 0).sum().item()}, "
+        f"aq_samples={[f'{s:.0f}' for s in aq_samples]}, "
+        f"sf_min={aq_sf_float.min().item():.6f}, sf_max={aq_sf_float.max().item():.6f}, "
+        f"sf_samples={[f'{s:.0f}' for s in sf_samples]}"
+    )
+
     # Gemm1
     flashinfer_cutedsl_grouped_gemm_nt_masked(
         (aq, aq_sf),
@@ -413,6 +352,23 @@ def flashinfer_cutedsl_moe_masked(
         alpha=w1_alpha.view(1, 1, num_experts),
         alpha_dtype=get_cute_dtype(w1_alpha),
     )  # in logical [m, n, l]
+
+    # Log after Gemm1
+    ws_float = workspace.float().flatten()
+    num_samples = min(10, len(ws_float))
+    sample_indices = [int(i * len(ws_float) / num_samples) for i in range(num_samples)]
+    ws_samples = [ws_float[idx].item() for idx in sample_indices]
+    ws_nan_count = torch.isnan(ws_float).sum().item()
+    ws_inf_count = torch.isinf(ws_float).sum().item()
+    ws_nonzero = (ws_float != 0).sum().item()
+    logger.info(
+        f"{LOG_PREFIX} after_gemm1: "
+        f"workspace.shape={workspace.shape}, workspace.dtype={workspace.dtype}, "
+        f"min={ws_float.min().item():.6f}, max={ws_float.max().item():.6f}, "
+        f"mean={ws_float.mean().item():.6f}, std={ws_float.std().item():.6f}, "
+        f"nan_count={ws_nan_count}, inf_count={ws_inf_count}, nonzero={ws_nonzero}, total={ws_float.numel()}, "
+        f"samples={[f'{s:.6f}' for s in ws_samples]}"
+    )
 
     # SILU and quantization
     diq, diq_sf = silu_and_mul_scaled_nvfp4_experts_quantize(
@@ -429,6 +385,28 @@ def flashinfer_cutedsl_moe_masked(
 
     # Gemm2
     out = out.permute(1, 2, 0)  # requirement of kernel
+
+    # Log before Gemm2
+    diq_float = diq.float().flatten()
+    diq_sf_float = diq_sf.view(torch.uint8).float().flatten()
+    num_samples = min(10, len(diq_float))
+    sample_indices = [int(i * len(diq_float) / num_samples) for i in range(num_samples)]
+    diq_samples = [diq_float[idx].item() for idx in sample_indices]
+    sf_sample_indices = [
+        int(i * len(diq_sf_float) / num_samples) for i in range(num_samples)
+    ]
+    diq_sf_samples = [diq_sf_float[idx].item() for idx in sf_sample_indices]
+    logger.info(
+        f"{LOG_PREFIX} before_gemm2: "
+        f"diq.shape={diq.shape}, diq.dtype={diq.dtype}, "
+        f"diq_sf.shape={diq_sf.shape}, diq_sf.dtype={diq_sf.dtype}, "
+        f"diq_min={diq_float.min().item():.6f}, diq_max={diq_float.max().item():.6f}, "
+        f"diq_mean={diq_float.mean().item():.6f}, diq_nonzero={(diq_float != 0).sum().item()}, "
+        f"diq_samples={[f'{s:.0f}' for s in diq_samples]}, "
+        f"diq_sf_min={diq_sf_float.min().item():.6f}, diq_sf_max={diq_sf_float.max().item():.6f}, "
+        f"diq_sf_samples={[f'{s:.0f}' for s in diq_sf_samples]}"
+    )
+
     flashinfer_cutedsl_grouped_gemm_nt_masked(
         (diq, diq_sf),
         (w2.permute(1, 2, 0), w2_blockscale),
@@ -449,6 +427,24 @@ def flashinfer_cutedsl_moe_masked(
             else {}
         ),
     )  # in logical [m, k, l]
+
+    # Log after Gemm2
+    out_float = out.float().flatten()
+    num_samples = min(10, len(out_float))
+    sample_indices = [int(i * len(out_float) / num_samples) for i in range(num_samples)]
+    out_samples = [out_float[idx].item() for idx in sample_indices]
+    out_nan_count = torch.isnan(out_float).sum().item()
+    out_inf_count = torch.isinf(out_float).sum().item()
+    out_nonzero = (out_float != 0).sum().item()
+    logger.info(
+        f"{LOG_PREFIX} after_gemm2: "
+        f"out.shape={out.shape}, out.dtype={out.dtype}, "
+        f"min={out_float.min().item():.6f}, max={out_float.max().item():.6f}, "
+        f"mean={out_float.mean().item():.6f}, std={out_float.std().item():.6f}, "
+        f"nan_count={out_nan_count}, inf_count={out_inf_count}, nonzero={out_nonzero}, total={out_float.numel()}, "
+        f"samples={[f'{s:.6f}' for s in out_samples]}"
+    )
+
     out = out.permute(2, 0, 1)
 
 

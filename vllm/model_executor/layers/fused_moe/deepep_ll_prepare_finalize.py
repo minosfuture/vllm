@@ -261,6 +261,9 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
 
             # TODO (varun): Optimization - Use a batched version of quant
             x = x.view((-1, hidden_dim))
+            logger.info(
+                f"{LOG_PREFIX} no fp4 dispatch: calling moe_kernel_quantize_input before: {x.dtype=}"
+            )
             x, x_scales = moe_kernel_quantize_input(
                 x,
                 quant_config.a1_scale,
@@ -269,6 +272,9 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
                 quant_config.block_shape,
             )
             x = x.view((num_experts, -1, hidden_dim))
+            logger.info(
+                f"{LOG_PREFIX} no fp4 dispatch: calling moe_kernel_quantize_input after: {x.dtype=}"
+            )
 
         if q_dtype is not None and q_dtype != "nvfp4":
             assert x_scales is not None
@@ -335,7 +341,9 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         a1_float = a1.float()
         a1_flat = a1_float.flatten()
         num_samples = min(10, len(a1_flat))
-        sample_indices = [int(i * len(a1_flat) / num_samples) for i in range(num_samples)]
+        sample_indices = [
+            int(i * len(a1_flat) / num_samples) for i in range(num_samples)
+        ]
         samples = [a1_flat[idx].item() for idx in sample_indices]
         has_nan = torch.isnan(a1_float).any().item()
         has_inf = torch.isinf(a1_float).any().item()
@@ -392,10 +400,14 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
             ex0_flat = expert_x[0].flatten().float()
             ex1_flat = expert_x[1].flatten().float()
             num_samples = min(10, len(ex0_flat))
-            sample_indices_0 = [int(i * len(ex0_flat) / num_samples) for i in range(num_samples)]
+            sample_indices_0 = [
+                int(i * len(ex0_flat) / num_samples) for i in range(num_samples)
+            ]
             data_samples = [ex0_flat[idx].item() for idx in sample_indices_0]
             num_samples_1 = min(10, len(ex1_flat))
-            sample_indices_1 = [int(i * len(ex1_flat) / num_samples_1) for i in range(num_samples_1)]
+            sample_indices_1 = [
+                int(i * len(ex1_flat) / num_samples_1) for i in range(num_samples_1)
+            ]
             scale_samples = [ex1_flat[idx].item() for idx in sample_indices_1]
             # Stats for data (ex0_flat)
             data_nan_count = torch.isnan(ex0_flat).sum().item()
@@ -428,7 +440,9 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
             ex_float = expert_x.float()
             ex_flat = ex_float.flatten()
             num_samples = min(10, len(ex_flat))
-            sample_indices = [int(i * len(ex_flat) / num_samples) for i in range(num_samples)]
+            sample_indices = [
+                int(i * len(ex_flat) / num_samples) for i in range(num_samples)
+            ]
             samples = [ex_flat[idx].item() for idx in sample_indices]
             has_nan = torch.isnan(ex_float).any().item()
             has_inf = torch.isinf(ex_float).any().item()
@@ -539,7 +553,9 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         fused_float = fused_expert_output.float()
         fused_flat = fused_float.flatten()
         num_samples = min(10, len(fused_flat))
-        sample_indices = [int(i * len(fused_flat) / num_samples) for i in range(num_samples)]
+        sample_indices = [
+            int(i * len(fused_flat) / num_samples) for i in range(num_samples)
+        ]
         samples = [fused_flat[idx].item() for idx in sample_indices]
         has_nan = torch.isnan(fused_float).any().item()
         has_inf = torch.isinf(fused_float).any().item()
@@ -605,7 +621,9 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         out_float = output.float()
         out_flat = out_float.flatten()
         num_samples = min(10, len(out_flat))
-        sample_indices = [int(i * len(out_flat) / num_samples) for i in range(num_samples)]
+        sample_indices = [
+            int(i * len(out_flat) / num_samples) for i in range(num_samples)
+        ]
         samples = [out_flat[idx].item() for idx in sample_indices]
         has_nan = torch.isnan(out_float).any().item()
         has_inf = torch.isinf(out_float).any().item()
