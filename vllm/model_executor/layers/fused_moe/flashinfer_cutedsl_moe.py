@@ -445,6 +445,32 @@ def flashinfer_cutedsl_moe_masked(
         f"samples={[f'{s:.6f}' for s in out_samples]}"
     )
 
+    # Verify GEMM output per expert - check that valid experts don't have NaNs
+    # out shape is [m, k, num_experts] at this point
+    if out_nan_count > 0 or out_inf_count > 0:
+        # out is in [m, k, l] format, need to check per expert (last dim)
+        for exp_idx in range(num_experts):
+            exp_tokens = masked_m[exp_idx].item()
+            if exp_tokens > 0:
+                # Only check the valid token region for this expert
+                exp_out = out[:exp_tokens, :, exp_idx].float()
+                exp_nan = torch.isnan(exp_out).sum().item()
+                exp_inf = torch.isinf(exp_out).sum().item()
+                exp_total = exp_out.numel()
+                if exp_nan > 0 or exp_inf > 0:
+                    logger.warning(
+                        f"{LOG_PREFIX} GEMM_OUTPUT_ERROR expert[{exp_idx}]: "
+                        f"tokens={exp_tokens}, nan={exp_nan}, inf={exp_inf}, "
+                        f"total={exp_total}, "
+                        f"min={exp_out.min().item():.6f}, max={exp_out.max().item():.6f}"
+                    )
+                else:
+                    logger.info(
+                        f"{LOG_PREFIX} gemm_output_ok expert[{exp_idx}]: "
+                        f"tokens={exp_tokens}, nan=0, inf=0, total={exp_total}, "
+                        f"min={exp_out.min().item():.6f}, max={exp_out.max().item():.6f}"
+                    )
+
     out = out.permute(2, 0, 1)
 
 

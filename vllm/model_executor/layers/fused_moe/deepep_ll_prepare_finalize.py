@@ -359,6 +359,8 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
             f"nonzero_count={nonzero_count}, total={a1_flat.numel()}, "
             f"samples={[f'{s:.6f}' for s in samples]}, "
             f"nvfp4_dispatch={nvfp4_dispatch}, "
+            f"a1_gscale_shape={quant_config.a1_gscale.shape if quant_config.a1_gscale is not None else None}, "
+            f"a1_scale_shape={quant_config.a1_scale.shape if quant_config.a1_scale is not None else None}, "
             f"a1_gscale={quant_config.a1_gscale[:10].tolist() if quant_config.a1_gscale is not None and len(quant_config.a1_gscale) >= 10 else (quant_config.a1_gscale.tolist() if quant_config.a1_gscale is not None else None)}"
         )
 
@@ -394,71 +396,6 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         )
         self.handles[a2a_idx] = handle
 
-        # Log dispatch results with tensor stats and samples
-        if isinstance(expert_x, tuple):
-            # FP4 dispatch path - expert_x[0] is quantized data, expert_x[1] is scales
-            ex0_flat = expert_x[0].flatten().float()
-            ex1_flat = expert_x[1].flatten().float()
-            num_samples = min(10, len(ex0_flat))
-            sample_indices_0 = [
-                int(i * len(ex0_flat) / num_samples) for i in range(num_samples)
-            ]
-            data_samples = [ex0_flat[idx].item() for idx in sample_indices_0]
-            num_samples_1 = min(10, len(ex1_flat))
-            sample_indices_1 = [
-                int(i * len(ex1_flat) / num_samples_1) for i in range(num_samples_1)
-            ]
-            scale_samples = [ex1_flat[idx].item() for idx in sample_indices_1]
-            # Stats for data (ex0_flat)
-            data_nan_count = torch.isnan(ex0_flat).sum().item()
-            data_inf_count = torch.isinf(ex0_flat).sum().item()
-            data_nonzero = (ex0_flat != 0).sum().item()
-            data_min = ex0_flat.min().item()
-            data_max = ex0_flat.max().item()
-            data_mean = ex0_flat.mean().item()
-            data_std = ex0_flat.std().item()
-            # Stats for scales (ex1_flat)
-            scale_nan_count = torch.isnan(ex1_flat).sum().item()
-            scale_inf_count = torch.isinf(ex1_flat).sum().item()
-            scale_nonzero = (ex1_flat != 0).sum().item()
-            scale_negative = (ex1_flat < 0).sum().item()
-            logger.info(
-                f"{LOG_PREFIX} after_dispatch (tuple): "
-                f"data_shape={expert_x[0].shape}, data_dtype={expert_x[0].dtype}, "
-                f"scale_shape={expert_x[1].shape}, scale_dtype={expert_x[1].dtype}, "
-                f"data_min={data_min:.6f}, data_max={data_max:.6f}, data_mean={data_mean:.6f}, data_std={data_std:.6f}, "
-                f"data_nonzero={data_nonzero}, data_nan_count={data_nan_count}, data_inf_count={data_inf_count}, data_total={ex0_flat.numel()}, "
-                f"data_samples={[f'{s:.6f}' for s in data_samples]}, "
-                f"scale_min={ex1_flat.min().item():.6f}, scale_max={ex1_flat.max().item():.6f}, "
-                f"scale_mean={ex1_flat.mean().item():.6f}, scale_std={ex1_flat.std().item():.6f}, "
-                f"scale_nan_count={scale_nan_count}, scale_inf_count={scale_inf_count}, "
-                f"scale_nonzero={scale_nonzero}, scale_negative={scale_negative}, scale_total={ex1_flat.numel()}, "
-                f"scale_samples={[f'{s:.6f}' for s in scale_samples]}"
-            )
-        else:
-            # BF16 dispatch path
-            ex_float = expert_x.float()
-            ex_flat = ex_float.flatten()
-            num_samples = min(10, len(ex_flat))
-            sample_indices = [
-                int(i * len(ex_flat) / num_samples) for i in range(num_samples)
-            ]
-            samples = [ex_flat[idx].item() for idx in sample_indices]
-            has_nan = torch.isnan(ex_float).any().item()
-            has_inf = torch.isinf(ex_float).any().item()
-            nan_count = torch.isnan(ex_float).sum().item()
-            inf_count = torch.isinf(ex_float).sum().item()
-            nonzero_count = (ex_float != 0).sum().item()
-            logger.info(
-                f"{LOG_PREFIX} after_dispatch (tensor): "
-                f"shape={expert_x.shape}, dtype={expert_x.dtype}, "
-                f"min={ex_float.min().item():.6f}, max={ex_float.max().item():.6f}, "
-                f"mean={ex_float.mean().item():.6f}, std={ex_float.std().item():.6f}, "
-                f"has_nan={has_nan}, has_inf={has_inf}, nan_count={nan_count}, inf_count={inf_count}, "
-                f"nonzero_count={nonzero_count}, total={ex_flat.numel()}, "
-                f"samples={[f'{s:.6f}' for s in samples]}"
-            )
-
         # We need to pass w2_gemm_overlap_args to moe implementation,
         # so return it as an output paramter
         w2_gemm_overlap_args = self._create_sbo_args(local_num_experts, a1.device)
@@ -482,29 +419,139 @@ class DeepEPLLPrepareAndFinalize(mk.FusedMoEPrepareAndFinalize):
         a1_dtype: torch.dtype,
         quant_config: FusedMoEQuantConfig,
     ) -> mk.PrepareResultType:
-        # Log input to _receiver
+        # Log input to _receiver (after dispatch, before _do_quant)
         if isinstance(expert_x, tuple):
             logger.info(
                 f"{LOG_PREFIX} _receiver input (tuple): "
                 f"expert_x[0].shape={expert_x[0].shape}, expert_x[0].dtype={expert_x[0].dtype}, "
                 f"expert_x[1].shape={expert_x[1].shape}, expert_x[1].dtype={expert_x[1].dtype}, "
+                f"dispatch_scale_shape={expert_x[1].shape}, "
                 f"quant_dtype={quant_config.quant_dtype}"
             )
         else:
             logger.info(
                 f"{LOG_PREFIX} _receiver input: "
                 f"expert_x.shape={expert_x.shape}, expert_x.dtype={expert_x.dtype}, "
+                f"dispatch_scale_shape=None, "
                 f"quant_dtype={quant_config.quant_dtype}"
             )
 
         expert_x, expert_x_scale = self._do_quant(expert_x, a1_dtype, quant_config)
 
-        # Log output after _do_quant
-        logger.info(
-            f"{LOG_PREFIX} _receiver after _do_quant: "
-            f"expert_x.shape={expert_x.shape}, expert_x.dtype={expert_x.dtype}, "
-            f"expert_x_scale={'None' if expert_x_scale is None else (expert_x_scale.shape, expert_x_scale.dtype)}"
-        )
+        # Log output after _do_quant with detailed tensor stats and samples
+        if expert_x_scale is not None:
+            # Quantized path - log both data and scales
+            ex_flat = expert_x.flatten().float()
+            scale_flat = expert_x_scale.flatten().float()
+            num_samples = min(10, len(ex_flat))
+            sample_indices = [
+                int(i * len(ex_flat) / num_samples) for i in range(num_samples)
+            ]
+            data_samples = [ex_flat[idx].item() for idx in sample_indices]
+            num_samples_scale = min(10, len(scale_flat))
+            sample_indices_scale = [
+                int(i * len(scale_flat) / num_samples_scale)
+                for i in range(num_samples_scale)
+            ]
+            scale_samples = [scale_flat[idx].item() for idx in sample_indices_scale]
+            # Stats for data
+            data_nan_count = torch.isnan(ex_flat).sum().item()
+            data_inf_count = torch.isinf(ex_flat).sum().item()
+            data_nonzero = (ex_flat != 0).sum().item()
+            data_min = ex_flat.min().item()
+            data_max = ex_flat.max().item()
+            data_mean = ex_flat.mean().item()
+            data_std = ex_flat.std().item()
+            # Stats for scales
+            scale_nan_count = torch.isnan(scale_flat).sum().item()
+            scale_inf_count = torch.isinf(scale_flat).sum().item()
+            scale_nonzero = (scale_flat != 0).sum().item()
+            scale_negative = (scale_flat < 0).sum().item()
+            logger.info(
+                f"{LOG_PREFIX} after_dispatch (quantized): "
+                f"data_shape={expert_x.shape}, data_dtype={expert_x.dtype}, "
+                f"scale_shape={expert_x_scale.shape}, scale_dtype={expert_x_scale.dtype}, "
+                f"data_min={data_min:.6f}, data_max={data_max:.6f}, "
+                f"data_mean={data_mean:.6f}, data_std={data_std:.6f}, "
+                f"data_nonzero={data_nonzero}, data_nan_count={data_nan_count}, "
+                f"data_inf_count={data_inf_count}, data_total={ex_flat.numel()}, "
+                f"data_samples={[f'{s:.6f}' for s in data_samples]}, "
+                f"scale_min={scale_flat.min().item():.6f}, "
+                f"scale_max={scale_flat.max().item():.6f}, "
+                f"scale_mean={scale_flat.mean().item():.6f}, "
+                f"scale_std={scale_flat.std().item():.6f}, "
+                f"scale_nan_count={scale_nan_count}, scale_inf_count={scale_inf_count}, "
+                f"scale_nonzero={scale_nonzero}, scale_negative={scale_negative}, "
+                f"scale_total={scale_flat.numel()}, "
+                f"scale_samples={[f'{s:.6f}' for s in scale_samples]}"
+            )
+
+            # Debug: Investigate NaN and negative scales
+            if scale_nan_count > 0 or scale_negative > 0:
+                logger.info(
+                    f"{LOG_PREFIX} scale_debug: expert_num_tokens={expert_num_tokens.tolist()}"
+                )
+                # Analyze NaN/negative distribution per expert
+                # expert_x_scale shape is [num_experts, ...] after reshape or swizzled
+                num_experts = expert_x_scale.shape[0]
+                for exp_idx in range(num_experts):
+                    exp_scale = expert_x_scale[exp_idx].flatten().float()
+                    exp_nan = torch.isnan(exp_scale).sum().item()
+                    exp_neg = (exp_scale < 0).sum().item()
+                    exp_total = exp_scale.numel()
+                    exp_tokens = expert_num_tokens[exp_idx].item()
+                    if exp_nan > 0 or exp_neg > 0:
+                        # Get valid (non-NaN) stats
+                        valid_mask = ~torch.isnan(exp_scale)
+                        valid_scales = exp_scale[valid_mask]
+                        valid_min = (
+                            valid_scales.min().item()
+                            if valid_scales.numel() > 0
+                            else float("nan")
+                        )
+                        valid_max = (
+                            valid_scales.max().item()
+                            if valid_scales.numel() > 0
+                            else float("nan")
+                        )
+                        logger.info(
+                            f"{LOG_PREFIX} scale_debug expert[{exp_idx}]: "
+                            f"tokens={exp_tokens}, nan={exp_nan}, neg={exp_neg}, "
+                            f"total={exp_total}, valid_min={valid_min:.6f}, valid_max={valid_max:.6f}"
+                        )
+
+                # Check if NaNs are in padding regions (tokens beyond expert_num_tokens)
+                # For swizzled layout [num_experts, 4, 16, 4, 112, 32], need to understand mapping
+                max_tokens = expert_x.shape[1]  # max_tokens_per_rank
+                logger.info(
+                    f"{LOG_PREFIX} scale_debug: max_tokens_per_rank={max_tokens}, "
+                    f"total_tokens_received={expert_num_tokens.sum().item()}, "
+                    f"scale_layout={expert_x_scale.shape}"
+                )
+        else:
+            # Non-quantized path
+            ex_float = expert_x.float()
+            ex_flat = ex_float.flatten()
+            num_samples = min(10, len(ex_flat))
+            sample_indices = [
+                int(i * len(ex_flat) / num_samples) for i in range(num_samples)
+            ]
+            samples = [ex_flat[idx].item() for idx in sample_indices]
+            has_nan = torch.isnan(ex_float).any().item()
+            has_inf = torch.isinf(ex_float).any().item()
+            nan_count = torch.isnan(ex_float).sum().item()
+            inf_count = torch.isinf(ex_float).sum().item()
+            nonzero_count = (ex_float != 0).sum().item()
+            logger.info(
+                f"{LOG_PREFIX} after_dispatch (tensor): "
+                f"shape={expert_x.shape}, dtype={expert_x.dtype}, "
+                f"min={ex_float.min().item():.6f}, max={ex_float.max().item():.6f}, "
+                f"mean={ex_float.mean().item():.6f}, std={ex_float.std().item():.6f}, "
+                f"has_nan={has_nan}, has_inf={has_inf}, "
+                f"nan_count={nan_count}, inf_count={inf_count}, "
+                f"nonzero_count={nonzero_count}, total={ex_flat.numel()}, "
+                f"samples={[f'{s:.6f}' for s in samples]}"
+            )
 
         expert_tokens_meta = mk.ExpertTokensMetadata(
             expert_num_tokens=expert_num_tokens, expert_num_tokens_cpu=None
