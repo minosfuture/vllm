@@ -4,8 +4,8 @@
 
 PD_VLLM_ENV := '''\
 VLLM_NIXL_SIDE_CHANNEL_HOST=`hostname -i` \
-VLLM_NIXL_SIDE_CHANNEL_PORT=5600 \
-VLLM_NIXL_ABORT_REQUEST_TIMEOUT=300 '''
+VLLM_NIXL_SIDE_CHANNEL_PORT=5700 \
+VLLM_NIXL_ABORT_REQUEST_TIMEOUT=600 '''
 
 PD_VLLM_ARGS := '''\
 --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both", "kv_load_failure_policy":"fail"}' '''
@@ -35,7 +35,7 @@ nsys profile \
 # -------
 
 prefill-master PMA DPS:
-	{{PREFILL_VLLM_ENV}} {{NSYS_COMMAND}} -o ds-{{PREC}}-prefill-master.nsys-rep vllm serve {{MODEL}} \
+	{{PREFILL_VLLM_ENV}} vllm serve {{MODEL}} \
 		{{PREFILL_VLLM_ARGS}} \
 		--data-parallel-address {{PMA}} \
 		--data-parallel-size {{DPS}} \
@@ -58,19 +58,21 @@ decode-master DMA DPS:
 		2>&1 | tee decode-master.log
 		
 decode-worker DMA DPSR DPS:
-	{{DECODE_VLLM_ENV}} {{NSYS_COMMAND}} -o ds-{{PREC}}-decode-worker-{{DPSR}}.nsys-rep vllm serve {{MODEL}} \
+	{{DECODE_VLLM_ENV}} vllm serve {{MODEL}} \
 		{{DECODE_VLLM_ARGS}} \
 		--data-parallel-address {{DMA}} \
 		--data-parallel-start-rank {{DPSR}} \
 		--data-parallel-size {{DPS}} \
 		2>&1 | tee decode-worker-{{DPSR}}.log
 
-prefill-master-pd PMA DPS:
-	{{PREFILL_PD_VLLM_ENV}} {{NSYS_COMMAND}} -o ds-{{PREC}}-prefill-master.nsys-rep vllm serve {{MODEL}} \
-		{{PREFILL_PD_VLLM_ARGS}} \
-		--data-parallel-address {{PMA}} \
-		--data-parallel-size {{DPS}} \
-		2>&1 | tee prefill-master-pd.log
+prefill-master-pd PMA DPS NUMA="0":
+  {{PREFILL_PD_VLLM_ENV}} \
+    numactl --cpunodebind={{NUMA}} --membind={{NUMA}} \
+    vllm serve {{MODEL}} \
+    {{PREFILL_PD_VLLM_ARGS}} \
+    --data-parallel-address {{PMA}} \
+    --data-parallel-size {{DPS}} \
+    2>&1 | tee prefill-master-pd.log
 
 prefill-worker-pd PMA DPSR DPS:
 	{{PREFILL_PD_VLLM_ENV}} {{NSYS_COMMAND}} -o ds-{{PREC}}-prefill-worker-{{DPSR}}.nsys-rep vllm serve {{MODEL}} \
@@ -81,14 +83,14 @@ prefill-worker-pd PMA DPSR DPS:
 		2>&1 | tee prefill-worker-{{DPSR}}.log
 
 decode-master-pd DMA DPS:
-	{{DECODE_PD_VLLM_ENV}} {{NSYS_COMMAND}} -o ds-{{PREC}}-decode-master.nsys-rep vllm serve {{MODEL}} \
+	{{DECODE_PD_VLLM_ENV}} vllm serve {{MODEL}} \
 		{{DECODE_PD_VLLM_ARGS}} \
 		--data-parallel-address {{DMA}} \
 		--data-parallel-size {{DPS}} \
 		2>&1 | tee decode-master-pd.log
 
 decode-worker-pd DMA DPSR DPS:
-	{{DECODE_PD_VLLM_ENV}} {{NSYS_COMMAND}} -o ds-{{PREC}}-decode-worker-{{DPSR}}.nsys-rep vllm serve {{MODEL}} \
+	{{DECODE_PD_VLLM_ENV}} vllm serve {{MODEL}} \
 		{{DECODE_PD_VLLM_ARGS}} \
 		--data-parallel-address {{DMA}} \
 		--data-parallel-start-rank {{DPSR}} \
@@ -123,6 +125,13 @@ router PA1 PA2 PA3 PA4 DA1 DA2:
 		--intra-node-data-parallel-size 4
 	popd
 
+wait PORT="8000" PMA="0.0.0.0":
+  #!/usr/bin/env bash
+  while ! curl -s "{{PMA}}:{{PORT}}/health" >/dev/null 2>&1; do
+  echo -n "."
+  sleep 5
+  done
+
 bench PMA="" PORT="8087" MC="8096" ISL="1024" OSL="1024" COMMON_PREFIX="0" SKIP_REQS="0":
 	#!/usr/bin/env bash
 	# Source utils.sh (assumes running from runs/fp4/ directory)
@@ -130,19 +139,20 @@ bench PMA="" PORT="8087" MC="8096" ISL="1024" OSL="1024" COMMON_PREFIX="0" SKIP_
 	if [ "$nsys" = "true" ]; then
 		start_profiler_control "{{PMA}}" "{{PORT}}"
 	fi
+	#just wait {{PORT}}
 	vllm bench serve \
 		--model {{MODEL}} \
 		--host {{PMA}} \
 		--port {{PORT}} \
 		--dataset-name random \
 		--ignore-eos \
-		--request-rate 100 \
+		--request-rate 1024 \
 		--num-prompts {{MC}} \
 		--max-concurrency {{MC}} \
 		--random-input-len {{ISL}} \
 		--random-output-len {{OSL}} \
 		--ready-check-timeout-sec 0 \
-		--common-prefix-len {{COMMON_PREFIX}} \
+		--random-prefix-len {{COMMON_PREFIX}} \
 		2>&1 | tee bench.log
 
 accuracy MA="" PORT="8087":
@@ -152,3 +162,8 @@ accuracy MA="" PORT="8087":
 
 kill:
 	pkill -9 -f VLLM::EngineCore || echo "All processes stopped"
+
+profile URL="8088" DUR="1":
+    curl -X POST "http://localhost:{{URL}}/start_profile" && \
+        sleep {{DUR}} && \
+        curl -X POST "http://localhost:{{URL}}/stop_profile"

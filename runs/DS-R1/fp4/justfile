@@ -4,7 +4,7 @@ import "../recipes.just"
 # CONFIG
 # ------
 
-MODEL := "/ds-models/DeepSeek-R1-0528-FP4-v2"
+MODEL := "/ds-models/DeepSeek-R1-0528-NVFP4-v2"
 PREC := "fp4"
 LYRIS_IFNAME := "enP22p3s0f1np1"
 PTYCHE_IFNAME := "enP6p3s0f1np1"
@@ -13,15 +13,18 @@ PTYCHE_IFNAME := "enP6p3s0f1np1"
 # ENV
 # ---
 
+#NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME=enP22p3s0f1np1 \
+#UCX_IB_ROCE_REACHABILITY_MODE=local_subnet \
+#GLOO_SOCKET_IFNAME=enP22p3s0f1np1 \
+#NCCL_SOCKET_IFNAME=enP22p3s0f1np1 \
+#UCX_NET_DEVICES=eth0 \
 SYSTEM_ENV := '''NVIDIA_GDRCOPY=1 \
 NVSHMEM_IB_ENABLE_IBGDA=1 \
-NVSHMEM_BOOTSTRAP_UID_SOCK_IFNAME=enP22p3s0f1np1 \
-UCX_IB_ROCE_REACHABILITY_MODE=local_subnet \
-VLLM_SKIP_P2P_CHECK=1 \
-GLOO_SOCKET_IFNAME=enP22p3s0f1np1 \
-NCCL_SOCKET_IFNAME=enP22p3s0f1np1 \
+VLLM_SKIP_P2P_CHECK=0 \
 NCCL_CUMEM_ENABLE=1 \
-NCCL_MNNVL_ENABLE=1 \
+NCCL_MNNVL_ENABLE=2 \
+NCCL_DEBUG=INFO \
+NCCL_DEBUG_FILE=./nccl-debug-%h-%p.log \
 NCCL_NVLS_ENABLE=1 '''
 
 
@@ -31,10 +34,13 @@ VLLM_ATTENTION_BACKEND=FLASHINFER_MLA \
 VLLM_USE_FLASHINFER_MOE_FP4=1 \
 VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
 VLLM_FLASHINFER_MOE_BACKEND=latency \
+VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
 VLLM_USE_NCCL_SYMM_MEM=1 '''
 
 # Currently there is no prefill or decode specific environment variables
-PREFILL_VLLM_ENV := SYSTEM_ENV + COMMON_VLLM_ENV 
+PREFILL_VLLM_ENV := SYSTEM_ENV + COMMON_VLLM_ENV + '''\
+VLLM_ENABLE_MOE_DP_CHUNK=0 ''' 
+
 PREFILL_PD_VLLM_ENV := PREFILL_VLLM_ENV + PD_VLLM_ENV
 
 DECODE_VLLM_ENV := SYSTEM_ENV + COMMON_VLLM_ENV + '''\
@@ -55,35 +61,27 @@ DECODE_PD_VLLM_ENV := DECODE_VLLM_ENV + PD_VLLM_ENV
 # ---------
 
 COMMON_VLLM_ARGS := '''
+--profiler-config.torch_profiler_dir=./profile/ \
 --kv-cache-dtype fp8 \
---tensor-parallel-size 1 \
---pipeline-parallel-size 1 \
 --enable-expert-parallel \
 --data-parallel-rpc-port 13345 \
 --max-model-len 4096 \
 --disable-uvicorn-access-log \
---no-enable-prefix-caching \
 --port 8087 \
+--trust-remote-code \
 --async-scheduling '''
 
 PREFILL_VLLM_ARGS := COMMON_VLLM_ARGS + '''\
---async-scheduling \
 --disable_custom_all_reduce \
---disable-uvicorn-access-log \
 --disable_nccl_for_dp_synchronization \
---enable-expert-parallel \
---kv-cache-dtype fp8 \
---tensor-parallel-size 1 \
---trust-remote-code \
+--no-enable-prefix-caching \
 --all2all-backend allgather_reducescatter \
 --compilation_config.custom_ops+=+quant_fp8,+rms_norm,+rotary_embedding \
 --gpu-memory-utilization 0.85 \
 --max-model-len 4096 \
 --max-num-batched-tokens 65536 \
 --max-num-seqs 1024 \
---no-enable-prefix-caching \
 --swap-space 16 \
---trust-remote-code \
 --data-parallel-size 2 \
 --enforce-eager \
 --offload-group-size 2 \
@@ -98,11 +96,11 @@ DECODE_VLLM_ARGS := COMMON_VLLM_ARGS + '''\
 --compilation-config.cudagraph_mode FULL_DECODE_ONLY \
 --compilation_config.custom_ops+=+rms_norm,+rotary_embedding \
 --data-parallel-hybrid-lb \
---gpu-memory-utilization 0.9 \
+--gpu-memory-utilization 0.91 \
 --data-parallel-size-local 4 \
 --stream-interval 50 \
---max-num-seqs 1024 \
+--max-num-seqs 1280 \
 --max-num-batched-tokens 8192 \
---max-cudagraph-capture-size 1024 '''
+--max-cudagraph-capture-size 1280 '''
 
 DECODE_PD_VLLM_ARGS := DECODE_VLLM_ARGS + PD_VLLM_ARGS
