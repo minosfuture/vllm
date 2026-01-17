@@ -53,6 +53,7 @@ from vllm.entrypoints.openai.protocol import (
     ErrorResponse,
     ResponsesRequest,
     ResponsesResponse,
+    SlowDownRequest,
     StreamingResponsesResponse,
     TranscriptionRequest,
     TranscriptionResponseVariant,
@@ -309,6 +310,27 @@ async def show_available_models(raw_request: Request):
 async def show_version():
     ver = {"version": VLLM_VERSION}
     return JSONResponse(content=ver)
+
+
+@router.post("/slow_down")
+async def slow_down(request: SlowDownRequest, raw_request: Request):
+    """
+    Slow down forward passes deliberately. Only for benchmarking.
+
+    Use case: When benchmarking decode performance in P/D disaggregation
+    with insufficient prefill nodes, slow down decode to accumulate
+    requests, then disable slowdown to process at full batch size.
+
+    Example:
+        curl -X POST http://localhost:8000/slow_down \
+            -H "Content-Type: application/json" \
+            -d '{"forward_sleep_time": 120.0}'
+    """
+    engine_client: EngineClient = raw_request.app.state.engine_client
+    await engine_client.slow_down(request.forward_sleep_time)
+    return JSONResponse(
+        content={"status": "ok", "forward_sleep_time": request.forward_sleep_time}
+    )
 
 
 async def _convert_stream_to_sse_events(
