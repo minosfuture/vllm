@@ -131,6 +131,12 @@ class LoggingStatLogger(StatLoggerBase):
         self.num_corrupted_reqs: int = 0
         self.num_preemptions: int = 0
 
+        # Track earliest start times for accurate throughput calculation.
+        # These are used to compute delta_time based on when tokens were
+        # actually generated, rather than fixed window boundaries.
+        self.window_earliest_prompt_ts: float | None = None
+        self.window_earliest_generation_ts: float | None = None
+
     def _enable_perf_stats(self) -> bool:
         return self.vllm_config.observability_config.enable_mfu_metrics
 
@@ -140,6 +146,29 @@ class LoggingStatLogger(StatLoggerBase):
         self.num_generation_tokens += iteration_stats.num_generation_tokens
         self.num_corrupted_reqs += iteration_stats.num_corrupted_reqs
         self.num_preemptions += iteration_stats.num_preempted_reqs
+
+        # Track earliest start times across the logging window.
+        if iteration_stats.earliest_prompt_scheduled_ts is not None:
+            if self.window_earliest_prompt_ts is None:
+                self.window_earliest_prompt_ts = (
+                    iteration_stats.earliest_prompt_scheduled_ts
+                )
+            else:
+                self.window_earliest_prompt_ts = min(
+                    self.window_earliest_prompt_ts,
+                    iteration_stats.earliest_prompt_scheduled_ts,
+                )
+
+        if iteration_stats.earliest_generation_first_token_ts is not None:
+            if self.window_earliest_generation_ts is None:
+                self.window_earliest_generation_ts = (
+                    iteration_stats.earliest_generation_first_token_ts
+                )
+            else:
+                self.window_earliest_generation_ts = min(
+                    self.window_earliest_generation_ts,
+                    iteration_stats.earliest_generation_first_token_ts,
+                )
 
     def _get_throughput(self, tracked_stats: int, now: float) -> float:
         # Compute summary metrics for tracked stats
@@ -189,8 +218,29 @@ class LoggingStatLogger(StatLoggerBase):
 
     def _update_stats(self):
         now = time.monotonic()
-        prompt_throughput = self._get_throughput(self.num_prompt_tokens, now)
-        generation_throughput = self._get_throughput(self.num_generation_tokens, now)
+
+        # Use batch-based delta times when available for more accurate
+        # throughput calculation. Fall back to window boundaries otherwise.
+        if self.window_earliest_prompt_ts is not None:
+            prompt_delta = now - self.window_earliest_prompt_ts
+        else:
+            prompt_delta = now - self.last_log_time
+
+        if self.window_earliest_generation_ts is not None:
+            generation_delta = now - self.window_earliest_generation_ts
+        else:
+            generation_delta = now - self.last_log_time
+
+        # Calculate throughput using batch-based deltas.
+        if prompt_delta > 0:
+            prompt_throughput = float(self.num_prompt_tokens / prompt_delta)
+        else:
+            prompt_throughput = 0.0
+
+        if generation_delta > 0:
+            generation_throughput = float(self.num_generation_tokens / generation_delta)
+        else:
+            generation_throughput = 0.0
 
         self._reset(now)
         self.engine_is_idle = not any(
