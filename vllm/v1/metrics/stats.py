@@ -245,11 +245,10 @@ class IterationStats:
         self.inter_token_latencies_iter: list[float] = []
         self.num_corrupted_reqs: int = 0
 
-        # Track earliest start times for accurate throughput calculation.
-        # These are used to compute delta_time based on when tokens were
-        # actually generated, rather than fixed window boundaries.
-        self.earliest_prompt_scheduled_ts: float | None = None
-        self.earliest_generation_first_token_ts: float | None = None
+        # Track earliest iteration timestamps for accurate throughput calculation.
+        # These track when batches in this iteration ran, not when requests started.
+        self.earliest_prompt_ts: float | None = None
+        self.earliest_generation_ts: float | None = None
 
     def __repr__(self) -> str:
         field_to_value_str = ", ".join(f"{k}={v}" for k, v in vars(self).items())
@@ -279,25 +278,23 @@ class IterationStats:
             self.time_to_first_tokens_iter.append(first_token_latency)
             req_stats.first_token_latency = first_token_latency
 
-            # Track earliest prefill start time for throughput calculation.
-            # Use scheduled_ts (when prefill started) as the reference.
-            if req_stats.scheduled_ts > 0.0:
-                if self.earliest_prompt_scheduled_ts is None:
-                    self.earliest_prompt_scheduled_ts = req_stats.scheduled_ts
-                else:
-                    self.earliest_prompt_scheduled_ts = min(
-                        self.earliest_prompt_scheduled_ts, req_stats.scheduled_ts
-                    )
-
-        # Track earliest decode start time for generation throughput.
-        # Use first_token_ts (when decode started) as the reference.
-        if num_new_generation_tokens > 0 and req_stats.first_token_ts > 0.0:
-            if self.earliest_generation_first_token_ts is None:
-                self.earliest_generation_first_token_ts = req_stats.first_token_ts
+            # Track earliest iteration timestamp for prompt throughput.
+            # Use engine_core_timestamp (when this batch ran) as reference.
+            if self.earliest_prompt_ts is None:
+                self.earliest_prompt_ts = engine_core_timestamp
             else:
-                self.earliest_generation_first_token_ts = min(
-                    self.earliest_generation_first_token_ts,
-                    req_stats.first_token_ts,
+                self.earliest_prompt_ts = min(
+                    self.earliest_prompt_ts, engine_core_timestamp
+                )
+
+        # Track earliest iteration timestamp for generation throughput.
+        # Use engine_core_timestamp (when this batch ran) as reference.
+        if num_new_generation_tokens > 0:
+            if self.earliest_generation_ts is None:
+                self.earliest_generation_ts = engine_core_timestamp
+            else:
+                self.earliest_generation_ts = min(
+                    self.earliest_generation_ts, engine_core_timestamp
                 )
 
         req_stats.num_generation_tokens += num_new_generation_tokens
