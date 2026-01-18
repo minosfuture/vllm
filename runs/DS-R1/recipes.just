@@ -133,27 +133,29 @@ wait PORT="8000" PMA="0.0.0.0":
   done
 
 bench PMA="" PORT="8087" MC="8096" ISL="1024" OSL="1024" COMMON_PREFIX="0" SKIP_REQS="0":
-	#!/usr/bin/env bash
-	# Source utils.sh (assumes running from runs/fp4/ directory)
-	source ../utils.sh
-	if [ "$nsys" = "true" ]; then
-		start_profiler_control "{{PMA}}" "{{PORT}}"
-	fi
-	#just wait {{PORT}}
-	vllm bench serve \
-		--model {{MODEL}} \
-		--host {{PMA}} \
-		--port {{PORT}} \
-		--dataset-name random \
-		--ignore-eos \
-		--request-rate 1024 \
-		--num-prompts {{MC}} \
-		--max-concurrency {{MC}} \
-		--random-input-len {{ISL}} \
-		--random-output-len {{OSL}} \
-		--ready-check-timeout-sec 0 \
-		--random-prefix-len {{COMMON_PREFIX}} \
-		2>&1 | tee bench.log
+  #!/usr/bin/env bash
+  # Source utils.sh (assumes running from runs/fp4/ directory)
+  source ../utils.sh
+  if [ "$nsys" = "true" ]; then
+  start_profiler_control "{{PMA}}" "{{PORT}}"
+  fi
+  just wait {{PORT}} {{PMA}}
+  vllm bench serve \
+    --model {{MODEL}} \
+    --host {{PMA}} \
+    --port {{PORT}} \
+    --dataset-name random \
+    --ignore-eos \
+    --request-rate 1024 \
+    --num-prompts {{MC}} \
+    --max-concurrency {{MC}} \
+    --random-input-len {{ISL}} \
+    --random-output-len {{OSL}} \
+    --ready-check-timeout-sec 0 \
+    --random-prefix-len {{COMMON_PREFIX}} \
+    --save-samples ./sample-{{ISL}}-{{OSL}}-{{MC}}.json \
+    --interactive \
+    2>&1 | tee bench.log
 
 accuracy MA="" PORT="8087":
 	lm_eval --model local-completions --tasks gsm8k --trust_remote_code --batch_size auto \

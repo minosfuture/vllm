@@ -9,6 +9,9 @@ PREC := "fp4"
 LYRIS_IFNAME := "enP22p3s0f1np1"
 PTYCHE_IFNAME := "enP6p3s0f1np1"
 
+# for 1K ISL 1K OSL
+DECODE_NUM_SEQ := "1480"
+
 # ---
 # ENV
 # ---
@@ -44,12 +47,13 @@ VLLM_ENABLE_MOE_DP_CHUNK=0 '''
 PREFILL_PD_VLLM_ENV := PREFILL_VLLM_ENV + PD_VLLM_ENV
 
 DECODE_VLLM_ENV := SYSTEM_ENV + COMMON_VLLM_ENV + '''\
+VLLM_LOG_STATS_INTERVAL=1 \
 VLLM_MLA_FP8_PROJ=1 \
 VLLM_DEEPEP_LOW_LATENCY_ALLOW_NVLINK=1 \
 VLLM_DEEPEP_LOW_LATENCY_USE_MNNVL=1 \
 VLLM_DEEPEP_BUFFER_SIZE_MB=0 \
 VLLM_EP_USE_SBO=0 \
-VLLM_MOE_DP_CHUNK_SIZE=1095 \
+VLLM_MOE_DP_CHUNK_SIZE=''' + DECODE_NUM_SEQ + ''' \
 VLLM_DEEPEPLL_NVFP4_DISPATCH=1 \
 VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
 VLLM_V1_OUTPUT_PROC_CHUNK_SIZE=2048 '''
@@ -65,7 +69,7 @@ COMMON_VLLM_ARGS := '''
 --kv-cache-dtype fp8 \
 --enable-expert-parallel \
 --data-parallel-rpc-port 13345 \
---max-model-len 3072 \
+--max-model-len 2148 \
 --disable-uvicorn-access-log \
 --port 8088 \
 --trust-remote-code \
@@ -95,11 +99,11 @@ DECODE_VLLM_ARGS := COMMON_VLLM_ARGS + '''\
 --compilation-config.cudagraph_mode FULL_DECODE_ONLY \
 --compilation_config.custom_ops+=+rms_norm,+rotary_embedding \
 --data-parallel-hybrid-lb \
---kv_cache_memory_bytes 118519622533 \
+--kv_cache_memory_bytes 117519622533 \
 --data-parallel-size-local 4 \
 --stream-interval 50 \
---max-num-seqs 1095 \
---max-num-batched-tokens 1095 \
---cudagraph-capture-sizes 128 512 1024 1095 '''
+--max-num-seqs ''' + DECODE_NUM_SEQ + ''' \
+--max-num-batched-tokens ''' + DECODE_NUM_SEQ + ''' \
+--cudagraph-capture-sizes 128 512 1024 ''' + DECODE_NUM_SEQ + " "
 
 DECODE_PD_VLLM_ARGS := DECODE_VLLM_ARGS + PD_VLLM_ARGS
