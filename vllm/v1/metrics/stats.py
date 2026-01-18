@@ -245,12 +245,6 @@ class IterationStats:
         self.inter_token_latencies_iter: list[float] = []
         self.num_corrupted_reqs: int = 0
 
-        # Track earliest start times for accurate throughput calculation.
-        # These are used to compute delta_time based on when tokens were
-        # actually generated, rather than fixed window boundaries.
-        self.earliest_prompt_scheduled_ts: float | None = None
-        self.earliest_generation_first_token_ts: float | None = None
-
     def __repr__(self) -> str:
         field_to_value_str = ", ".join(f"{k}={v}" for k, v in vars(self).items())
         return f"{self.__class__.__name__}({field_to_value_str})"
@@ -278,27 +272,6 @@ class IterationStats:
             first_token_latency = self._time_since(req_stats.arrival_time)
             self.time_to_first_tokens_iter.append(first_token_latency)
             req_stats.first_token_latency = first_token_latency
-
-            # Track earliest prefill start time for throughput calculation.
-            # Use scheduled_ts (when prefill started) as the reference.
-            if req_stats.scheduled_ts > 0.0:
-                if self.earliest_prompt_scheduled_ts is None:
-                    self.earliest_prompt_scheduled_ts = req_stats.scheduled_ts
-                else:
-                    self.earliest_prompt_scheduled_ts = min(
-                        self.earliest_prompt_scheduled_ts, req_stats.scheduled_ts
-                    )
-
-        # Track earliest decode start time for generation throughput.
-        # Use first_token_ts (when decode started) as the reference.
-        if num_new_generation_tokens > 0 and req_stats.first_token_ts > 0.0:
-            if self.earliest_generation_first_token_ts is None:
-                self.earliest_generation_first_token_ts = req_stats.first_token_ts
-            else:
-                self.earliest_generation_first_token_ts = min(
-                    self.earliest_generation_first_token_ts,
-                    req_stats.first_token_ts,
-                )
 
         req_stats.num_generation_tokens += num_new_generation_tokens
 
