@@ -116,7 +116,6 @@ class LoggingStatLogger(StatLoggerBase):
             )
         self.last_prompt_throughput: float = 0.0
         self.last_generation_throughput: float = 0.0
-        self.last_num_iterations: int = 0
         self.engine_is_idle = False
         self.aggregated = False
 
@@ -131,10 +130,10 @@ class LoggingStatLogger(StatLoggerBase):
         self.num_generation_tokens: int = 0
         self.num_corrupted_reqs: int = 0
         self.num_preemptions: int = 0
-        self.num_iterations: int = 0
 
-        # Track earliest iteration timestamps for accurate throughput calculation.
-        # These track when batches ran, not when requests started.
+        # Track earliest start times for accurate throughput calculation.
+        # These are used to compute delta_time based on when tokens were
+        # actually generated, rather than fixed window boundaries.
         self.window_earliest_prompt_ts: float | None = None
         self.window_earliest_generation_ts: float | None = None
 
@@ -147,27 +146,28 @@ class LoggingStatLogger(StatLoggerBase):
         self.num_generation_tokens += iteration_stats.num_generation_tokens
         self.num_corrupted_reqs += iteration_stats.num_corrupted_reqs
         self.num_preemptions += iteration_stats.num_preempted_reqs
-        self.num_iterations += 1
 
-        # Track earliest iteration timestamps across the logging window.
-        if iteration_stats.earliest_prompt_ts is not None:
+        # Track earliest start times across the logging window.
+        if iteration_stats.earliest_prompt_scheduled_ts is not None:
             if self.window_earliest_prompt_ts is None:
-                self.window_earliest_prompt_ts = iteration_stats.earliest_prompt_ts
+                self.window_earliest_prompt_ts = (
+                    iteration_stats.earliest_prompt_scheduled_ts
+                )
             else:
                 self.window_earliest_prompt_ts = min(
                     self.window_earliest_prompt_ts,
-                    iteration_stats.earliest_prompt_ts,
+                    iteration_stats.earliest_prompt_scheduled_ts,
                 )
 
-        if iteration_stats.earliest_generation_ts is not None:
+        if iteration_stats.earliest_generation_first_token_ts is not None:
             if self.window_earliest_generation_ts is None:
                 self.window_earliest_generation_ts = (
-                    iteration_stats.earliest_generation_ts
+                    iteration_stats.earliest_generation_first_token_ts
                 )
             else:
                 self.window_earliest_generation_ts = min(
                     self.window_earliest_generation_ts,
-                    iteration_stats.earliest_generation_ts,
+                    iteration_stats.earliest_generation_first_token_ts,
                 )
 
     def _get_throughput(self, tracked_stats: int, now: float) -> float:
@@ -242,9 +242,6 @@ class LoggingStatLogger(StatLoggerBase):
         else:
             generation_throughput = 0.0
 
-        # Save iteration count before reset.
-        num_iterations = self.num_iterations
-
         self._reset(now)
         self.engine_is_idle = not any(
             (
@@ -256,7 +253,6 @@ class LoggingStatLogger(StatLoggerBase):
         )
         self.last_generation_throughput = generation_throughput
         self.last_prompt_throughput = prompt_throughput
-        self.last_num_iterations = num_iterations
 
     def aggregate_scheduler_stats(self):
         # noop for per engine loggers
@@ -273,14 +269,12 @@ class LoggingStatLogger(StatLoggerBase):
             "Avg generation throughput: %.1f tokens/s",
             "Running: %d reqs",
             "Waiting: %d reqs",
-            "Iterations: %d",
         ]
         log_args: list[int | float | str] = [
             self.last_prompt_throughput,
             self.last_generation_throughput,
             self.last_scheduler_stats.num_running_reqs,
             self.last_scheduler_stats.num_waiting_reqs,
-            self.last_num_iterations,
         ]
 
         if self.num_preemptions > 0:
