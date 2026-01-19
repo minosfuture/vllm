@@ -1,0 +1,8 @@
+root@hpc-rack-1-0:fp4 (pd_gb200_0114)$ less -R report/2000in-1000out/decode-master-pd.log | rg "generation" | rg "Running: 1220" | cut -d ' ' -f 17 | awk '{s+=$1; n++} END{print s/n}'
+11035.4
+root@hpc-rack-1-0:fp4 (pd_gb200_0114)$ less -R report/2000in-100out/decode-master-pd.log  | rg "generation" | rg 1536 | cut -d ' ' -f 17 | awk '{s+=$1; n++} END{print s/n}'
+11182.3
+root@hpc-rack-1-0:fp4 (pd_gb200_0114)$ less -R report/1000in-1000out/decode-master-pd.log | rg "generation" | rg "Running: 1536" | cut -d ' ' -f 17 | awk '{s+=$1; n++} END{print s/n}'
+12534.4
+root@hpc-rack-1-0:fp4 (pd_gb200_0114)$ less -R report/2000in-2000out/decode-master-pd.log | rg "generation" | rg "Running: 1024" | cut -d ' ' -f 17 | awk '{s+=$1; n++} END{print s/n}'
+10108.4

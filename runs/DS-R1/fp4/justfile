@@ -10,7 +10,11 @@ LYRIS_IFNAME := "enP22p3s0f1np1"
 PTYCHE_IFNAME := "enP6p3s0f1np1"
 
 # for 1K ISL 1K OSL
-DECODE_NUM_SEQ := "1480"
+DECODE_NUM_SEQ := "1536"
+# for 2K ISL 1K OSL
+#DECODE_NUM_SEQ := "1220"
+# for 2K ISL 2K OSL
+#DECODE_NUM_SEQ := "1024"
 
 # ---
 # ENV
@@ -99,11 +103,11 @@ DECODE_VLLM_ARGS := COMMON_VLLM_ARGS + '''\
 --compilation-config.cudagraph_mode FULL_DECODE_ONLY \
 --compilation_config.custom_ops+=+rms_norm,+rotary_embedding \
 --data-parallel-hybrid-lb \
---kv_cache_memory_bytes 117519622533 \
+--kv_cache_memory_bytes 117019622533 \
 --data-parallel-size-local 4 \
 --stream-interval 50 \
 --max-num-seqs ''' + DECODE_NUM_SEQ + ''' \
 --max-num-batched-tokens ''' + DECODE_NUM_SEQ + ''' \
---cudagraph-capture-sizes 128 512 1024 ''' + DECODE_NUM_SEQ + " "
+--cudagraph-capture-sizes 128 512 ''' + DECODE_NUM_SEQ + " "
 
 DECODE_PD_VLLM_ARGS := DECODE_VLLM_ARGS + PD_VLLM_ARGS

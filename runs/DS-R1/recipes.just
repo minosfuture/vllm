@@ -153,7 +153,7 @@ bench PMA="" PORT="8087" MC="8096" ISL="1024" OSL="1024" COMMON_PREFIX="0" SKIP_
     --random-output-len {{OSL}} \
     --ready-check-timeout-sec 0 \
     --random-prefix-len {{COMMON_PREFIX}} \
-    --save-samples ./sample-{{ISL}}-{{OSL}}-{{MC}}.json \
+    --load-samples ./sample-{{ISL}}-{{OSL}}-{{MC}}.json \
     --interactive \
     2>&1 | tee bench.log
 
