@@ -25,21 +25,20 @@ DECODE_NUM_SEQ := "1536"
 #GLOO_SOCKET_IFNAME=enP22p3s0f1np1 \
 #NCCL_SOCKET_IFNAME=enP22p3s0f1np1 \
 #UCX_NET_DEVICES=eth0 \
+#NCCL_DEBUG=INFO \
+#NCCL_DEBUG_FILE=./nccl-debug-%h-%p.log \
 SYSTEM_ENV := '''NVIDIA_GDRCOPY=1 \
 NVSHMEM_IB_ENABLE_IBGDA=1 \
-VLLM_SKIP_P2P_CHECK=0 \
+VLLM_SKIP_P2P_CHECK=1 \
 NCCL_CUMEM_ENABLE=1 \
-NCCL_MNNVL_ENABLE=2 \
-NCCL_DEBUG=INFO \
-NCCL_DEBUG_FILE=./nccl-debug-%h-%p.log \
+NCCL_MNNVL_ENABLE=1 \
 NCCL_NVLS_ENABLE=1 '''
 
 
+#VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
 COMMON_VLLM_ENV := '''\
 VLLM_RANDOMIZE_DP_DUMMY_INPUTS=1 \
-VLLM_ATTENTION_BACKEND=FLASHINFER_MLA \
 VLLM_USE_FLASHINFER_MOE_FP4=1 \
-VLLM_USE_TRTLLM_RAGGED_DEEPSEEK_PREFILL=1 \
 VLLM_FLASHINFER_MOE_BACKEND=latency \
 VLLM_ENABLE_FUSED_MOE_ACTIVATION_CHUNKING=0 \
 VLLM_USE_NCCL_SYMM_MEM=1 '''
@@ -70,6 +69,8 @@ DECODE_PD_VLLM_ENV := DECODE_VLLM_ENV + PD_VLLM_ENV
 
 COMMON_VLLM_ARGS := '''
 --profiler-config.torch_profiler_dir=./profile/ \
+--attention-config.backend FLASHINFER_MLA \
+--attention-config.use_trtllm_ragged_deepseek_prefill=true \
 --kv-cache-dtype fp8 \
 --enable-expert-parallel \
 --data-parallel-rpc-port 13345 \
@@ -79,12 +80,12 @@ COMMON_VLLM_ARGS := '''
 --trust-remote-code \
 --async-scheduling '''
 
+#--compilation_config.custom_ops+=+quant_fp8,+rms_norm,+rotary_embedding \
 PREFILL_VLLM_ARGS := COMMON_VLLM_ARGS + '''\
 --disable_custom_all_reduce \
 --disable_nccl_for_dp_synchronization \
 --no-enable-prefix-caching \
 --all2all-backend allgather_reducescatter \
---compilation_config.custom_ops+=+quant_fp8,+rms_norm,+rotary_embedding \
 --gpu-memory-utilization 0.85 \
 --max-num-batched-tokens 65536 \
 --max-num-seqs 1024 \
