@@ -122,7 +122,7 @@ router PA1 PA2 PA3 PA4 DA1 DA2:
 		--decode {{DA2}} \
 		--host 0.0.0.0 \
 		--port 8192 \
-		--intra-node-data-parallel-size 4
+		--intra-node-data-parallel-size 1
 	popd
 
 wait PORT="8000" PMA="0.0.0.0":
