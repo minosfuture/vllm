@@ -1,0 +1,100 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+"""Custom ops for V2 offloader torch.compile + CUDA graph compatibility.
+
+These ops use mutates_args to create data dependencies that prevent
+the compiler from reordering prefetch/sync operations.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import torch
+
+from vllm.utils.torch_utils import direct_register_custom_op
+
+if TYPE_CHECKING:
+    from vllm.model_executor.offloader.v2 import OffloaderV2
+
+# Global reference to the offloader instance, set during OffloaderV2.__init__
+_offloader_instance: OffloaderV2 | None = None
+
+
+def set_offloader_instance(offloader: OffloaderV2 | None) -> None:
+    """Set the global offloader instance for custom ops to use."""
+    global _offloader_instance
+    _offloader_instance = offloader
+
+
+def get_offloader_instance() -> OffloaderV2 | None:
+    """Get the global offloader instance."""
+    return _offloader_instance
+
+
+# --- wait_prefetch op ---
+
+
+def _wait_prefetch_impl(sync_tensor: torch.Tensor, layer_idx: int) -> None:
+    """Wait for prefetch of layer_idx to complete.
+
+    Synchronizes the compute stream with the copy stream to ensure
+    the prefetched weights are ready for use.
+
+    Args:
+        sync_tensor: Dummy tensor used to establish data dependency.
+        layer_idx: Index of the layer to wait for.
+    """
+    if _offloader_instance is not None:
+        _offloader_instance._wait_for_layer(layer_idx)
+
+
+def _wait_prefetch_fake(sync_tensor: torch.Tensor, layer_idx: int) -> None:
+    """Fake implementation for torch.compile tracing."""
+    pass
+
+
+# --- start_prefetch op ---
+
+
+def _start_prefetch_impl(sync_tensor: torch.Tensor, layer_idx: int) -> None:
+    """Start async prefetch of layer_idx weights.
+
+    Initiates H2D copy on the copy stream for the specified layer.
+
+    Args:
+        sync_tensor: Dummy tensor used to establish data dependency.
+        layer_idx: Index of the layer to prefetch.
+    """
+    if _offloader_instance is not None:
+        _offloader_instance._start_prefetch(layer_idx)
+
+
+def _start_prefetch_fake(sync_tensor: torch.Tensor, layer_idx: int) -> None:
+    """Fake implementation for torch.compile tracing."""
+    pass
+
+
+def register_v2_offloader_ops() -> None:
+    """Register custom ops for V2 offloader.
+
+    Must be called before the ops are used. This is typically done
+    at module import time.
+    """
+    direct_register_custom_op(
+        op_name="wait_prefetch",
+        op_func=_wait_prefetch_impl,
+        mutates_args=["sync_tensor"],
+        fake_impl=_wait_prefetch_fake,
+    )
+
+    direct_register_custom_op(
+        op_name="start_prefetch",
+        op_func=_start_prefetch_impl,
+        mutates_args=["sync_tensor"],
+        fake_impl=_start_prefetch_fake,
+    )
+
+
+# Register ops at module import time
+register_v2_offloader_ops()

@@ -2,15 +2,22 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # Adapted from
 # https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/utils/offloader.py
-"""OffloaderV2: CPU offloading with async prefetching."""
+"""OffloaderV2: CPU offloading with async prefetching.
+
+This version uses static buffers and stream synchronization (instead of
+CUDA events) for torch.compile + CUDA graph compatibility.
+"""
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 from torch.func import functional_call
 
+# Import v2_ops to register custom ops at module load time
+import vllm.model_executor.offloader.v2_ops  # noqa: F401
 from vllm.logger import init_logger
 from vllm.model_executor.offloader.base import BaseOffloader
 from vllm.utils.platform_utils import is_pin_memory_available
@@ -21,11 +28,91 @@ _SubmoduleAccessor = Callable[[nn.Module], nn.Module]
 _WhitelistParamNamesCreator = Callable[[nn.Module], list[str]]
 
 
+@dataclass
+class ParamInfo:
+    """Metadata about an offloaded parameter."""
+
+    name: str
+    shape: tuple[int, ...]
+    dtype: torch.dtype
+
+    @property
+    def key(self) -> tuple[tuple[int, ...], torch.dtype]:
+        """Unique key for buffer pool grouping."""
+        return (self.shape, self.dtype)
+
+    @property
+    def num_bytes(self) -> int:
+        """Size in bytes."""
+        numel = 1
+        for dim in self.shape:
+            numel *= dim
+        return numel * torch.tensor([], dtype=self.dtype).element_size()
+
+
+class StaticBufferPool:
+    """Pre-allocated GPU buffer pool for offloaded parameters.
+
+    Allocates slot_capacity copies of each unique parameter shape,
+    allowing for double/triple buffering during prefetch.
+
+    Buffer slots are reused circularly: layer N uses slot (N % slot_capacity).
+    """
+
+    def __init__(
+        self,
+        param_infos: list[ParamInfo],
+        slot_capacity: int,
+        device: torch.device,
+    ):
+        self.slot_capacity = slot_capacity
+        self.total_bytes = 0
+        self._device = device
+
+        # Group by (shape, dtype) - only allocate unique shapes
+        unique_params: dict[tuple, ParamInfo] = {}
+        for info in param_infos:
+            if info.key not in unique_params:
+                unique_params[info.key] = info
+
+        # Allocate buffers: key -> list of tensors (one per slot)
+        self._buffers: dict[tuple, list[torch.Tensor]] = {}
+        for key, info in unique_params.items():
+            slot_tensors = []
+            for _ in range(slot_capacity):
+                buf = torch.empty(
+                    info.shape,
+                    dtype=info.dtype,
+                    device=device,
+                )
+                slot_tensors.append(buf)
+                self.total_bytes += info.num_bytes
+            self._buffers[key] = slot_tensors
+
+        logger.debug(
+            "[StaticBufferPool] Allocated %d unique shapes, "
+            "%d slots each, total %.4f GB",
+            len(unique_params),
+            slot_capacity,
+            self.total_bytes / 1e9,
+        )
+
+    def get_buffer(
+        self,
+        shape: tuple[int, ...],
+        dtype: torch.dtype,
+        slot_idx: int,
+    ) -> torch.Tensor:
+        """Get a static buffer for the given shape/dtype/slot."""
+        key = (shape, dtype)
+        return self._buffers[key][slot_idx % self.slot_capacity]
+
+
 class OffloaderV2(BaseOffloader):
     """Advanced offloader with group-based selection and async prefetching.
 
-    Unlike UVA offloading which provides zero-copy access, V2 explicitly
-    manages parameter transfers with prefetching to hide latency.
+    Uses static buffers and stream synchronization for torch.compile and
+    CUDA graph compatibility.
 
     Args:
         group_size: Group every N layers together.
@@ -45,9 +132,22 @@ class OffloaderV2(BaseOffloader):
         self.num_in_group = num_in_group
         self.prefetch_step = prefetch_step
         self.mode = mode
-        self.alt_stream = torch.cuda.Stream()
+
+        # Copy stream for async H2D transfers
+        self.copy_stream = torch.cuda.Stream()
+
+        # Sync tensor for custom op data dependencies (prevents reordering)
+        self._sync_tensor: torch.Tensor | None = None
+
+        # Module offloaders and buffer pool (populated in wrap_modules/post_init)
         self.module_offloaders: list[_ModuleOffloader] = []
+        self.buffer_pool: StaticBufferPool | None = None
         self.total_offloaded_bytes = 0
+
+        # Register this instance for custom ops
+        from vllm.model_executor.offloader.v2_ops import set_offloader_instance
+
+        set_offloader_instance(self)
 
     def wrap_modules(
         self,
@@ -81,8 +181,9 @@ class OffloaderV2(BaseOffloader):
                     _ModuleOffloader(
                         mode=self.mode,
                         module=submodule,
-                        alt_stream=self.alt_stream,
+                        copy_stream=self.copy_stream,
                         whitelist_param_names=whitelist_param_names,
+                        layer_idx=len(self.module_offloaders),
                     )
                 )
 
@@ -92,58 +193,110 @@ class OffloaderV2(BaseOffloader):
         return all_modules
 
     def _hook_module_forward(self, index: int, module: nn.Module):
-        """Hook module's forward to implement prefetch + execute + offload pattern."""
+        """Hook module's forward with torch.compile-compatible sync."""
         original_forward = module.forward
+        offloader = self.module_offloaders[index]
 
         def forward(*args, **kwargs):
+            # Temporarily restore original forward to avoid recursion
             module.forward = original_forward
-            device_tensors = self.module_offloaders[index].wait_and_get_device_tensors()
+
+            # Wait for this layer's prefetch to complete
+            # Custom op prevents reordering across this point
+            torch.ops.vllm.wait_prefetch(self._sync_tensor, index)
+
+            # Get static buffers for this layer
+            device_tensors = offloader.get_static_buffers()
+
+            # Execute with the static buffer parameters
             output = functional_call(module, device_tensors, args=args, kwargs=kwargs)
+
+            # Start prefetch for next layer (circular)
             next_index = (index + self.prefetch_step) % len(self.module_offloaders)
-            self.module_offloaders[next_index].start_onload()
-            self.module_offloaders[index].offload()
+            torch.ops.vllm.start_prefetch(self._sync_tensor, next_index)
+
+            # No explicit offload needed - static buffers are reused implicitly
+
+            # Restore hooked forward
             module.forward = forward
             return output
 
         module.forward = forward
 
+    def _wait_for_layer(self, layer_idx: int):
+        """Called by custom op - wait for copy stream to complete."""
+        # wait_stream creates a CUDA graph dependency edge when captured
+        torch.cuda.current_stream().wait_stream(self.copy_stream)
+
+    def _start_prefetch(self, layer_idx: int):
+        """Called by custom op - start async copy to static buffer."""
+        offloader = self.module_offloaders[layer_idx]
+        offloader.start_onload_to_static()
+
     def post_init(self):
-        """Initialize offloaders and start prefetching first N modules."""
+        """Allocate static buffer pool and start initial prefetches."""
+        # Collect parameter info and finalize offloaders
+        param_infos: list[ParamInfo] = []
+        device: torch.device | None = None
+
         for offloader in self.module_offloaders:
             offloader.post_init()
             self.total_offloaded_bytes += offloader.offloaded_bytes
+            param_infos.extend(offloader.get_param_infos())
+            if device is None:
+                device = offloader.device
+
+        if device is None:
+            # No modules to offload
+            return
+
+        # Create sync tensor on the device
+        self._sync_tensor = torch.empty(0, device=device)
+
+        # Allocate static buffer pool
+        self.buffer_pool = StaticBufferPool(
+            param_infos=param_infos,
+            slot_capacity=self.prefetch_step,
+            device=device,
+        )
+
+        # Assign buffer slots to offloaders (circular assignment)
+        for idx, offloader in enumerate(self.module_offloaders):
+            slot_idx = idx % self.prefetch_step
+            offloader.assign_buffer_slot(self.buffer_pool, slot_idx)
 
         logger.info_once(
             f"[OffloaderV2] Initialized {len(self.module_offloaders)} modules. "
-            f"Total GPU memory saved: {self.total_offloaded_bytes / 1e9:.4f} GB "
+            f"Total GPU memory saved: {self.total_offloaded_bytes / 1e9:.4f} GB, "
+            f"Static buffer pool: {self.buffer_pool.total_bytes / 1e9:.4f} GB "
             f"(group_size={self.group_size}, num_in_group={self.num_in_group}, "
             f"prefetch_step={self.prefetch_step}, mode={self.mode})"
         )
 
+        # Start initial prefetches
         for i in range(min(self.prefetch_step, len(self.module_offloaders))):
-            self.module_offloaders[i].start_onload()
+            self.module_offloaders[i].start_onload_to_static()
 
 
 class _ModuleOffloader:
     """Manages offloading for a single module.
 
-    Responsibilities:
-    - Create parameter offloaders for each parameter
-    - Coordinate async loading via alternate CUDA stream
-    - Provide device tensors when needed
+    Uses static buffers from a shared pool instead of dynamic allocation.
     """
 
     def __init__(
         self,
         mode: str,
         module: nn.Module,
-        alt_stream: torch.cuda.Stream,
+        copy_stream: torch.cuda.Stream,
         whitelist_param_names: list[str],
+        layer_idx: int,
     ):
         self.mode = mode
         self.module = module
         self.device = next(module.parameters()).device
-        self.alt_stream = alt_stream
+        self.copy_stream = copy_stream
+        self.layer_idx = layer_idx
         self.offloaded_bytes = 0
 
         assert self.device != torch.device("cpu"), (
@@ -151,8 +304,9 @@ class _ModuleOffloader:
             "(offloader handles CPU placement)"
         )
 
-        self._device_tensors: dict[str, torch.Tensor] | None = None
-        self._load_event: torch.cuda.Event | None = None
+        # Buffer pool and slot (assigned in assign_buffer_slot)
+        self._buffer_pool: StaticBufferPool | None = None
+        self._buffer_slot_idx: int = 0
 
         param_dict = dict(self.module.named_parameters())
         assert all(name in param_dict for name in whitelist_param_names), (
@@ -171,31 +325,54 @@ class _ModuleOffloader:
             param_offloader.post_init()
             self.offloaded_bytes += param_offloader.offloaded_bytes
 
-    def start_onload(self):
-        """Start async loading in alternate CUDA stream."""
-        self.alt_stream.wait_stream(torch.cuda.current_stream())
+    def get_param_infos(self) -> list[ParamInfo]:
+        """Get parameter metadata for buffer pool allocation."""
+        infos = []
+        for name, offloader in self._param_offloaders.items():
+            param = offloader._param
+            infos.append(
+                ParamInfo(
+                    name=name,
+                    shape=tuple(param.shape),
+                    dtype=param.dtype,
+                )
+            )
+        return infos
 
-        with torch.cuda.stream(self.alt_stream):
-            self._device_tensors = {
-                name: offloader.create_device_tensor()
-                for name, offloader in self._param_offloaders.items()
-            }
-            self._load_event = torch.cuda.Event()
-            self._load_event.record()
+    def assign_buffer_slot(self, pool: StaticBufferPool, slot_idx: int):
+        """Assign this module to a buffer slot in the pool."""
+        self._buffer_pool = pool
+        self._buffer_slot_idx = slot_idx
 
-    def offload(self):
-        """Free device tensors (offload from GPU memory)."""
-        self._device_tensors = None
-        self._load_event = None
+    def start_onload_to_static(self):
+        """Start async copy from CPU to static GPU buffer."""
+        assert self._buffer_pool is not None, "Buffer pool not assigned"
 
-    def wait_and_get_device_tensors(self) -> dict[str, torch.Tensor]:
-        """Wait for async loading to complete and return device tensors."""
-        assert self._device_tensors is not None, (
-            "Tensors not loaded (call start_onload first)"
-        )
-        if self._load_event is not None:
-            self._load_event.wait()
-        return self._device_tensors
+        with torch.cuda.stream(self.copy_stream):
+            for name, offloader in self._param_offloaders.items():
+                param = offloader._param  # CPU tensor
+                buffer = self._buffer_pool.get_buffer(
+                    shape=tuple(param.shape),
+                    dtype=param.dtype,
+                    slot_idx=self._buffer_slot_idx,
+                )
+                # Async copy from pinned CPU to GPU buffer
+                buffer.copy_(param, non_blocking=True)
+
+    def get_static_buffers(self) -> dict[str, torch.Tensor]:
+        """Get static GPU buffers for this layer (after sync)."""
+        assert self._buffer_pool is not None, "Buffer pool not assigned"
+
+        result = {}
+        for name, offloader in self._param_offloaders.items():
+            param = offloader._param
+            buffer = self._buffer_pool.get_buffer(
+                shape=tuple(param.shape),
+                dtype=param.dtype,
+                slot_idx=self._buffer_slot_idx,
+            )
+            result[name] = buffer
+        return result
 
 
 class _BaseParamOffloader(ABC):
@@ -269,5 +446,7 @@ class _CpuParamOffloader(_BaseParamOffloader):
         """Load from CPU to GPU (async if pinned).
 
         Returns a CUDA copy of the parameter (which has CPU data).
+        Note: This method is kept for backwards compatibility but is not
+        used in the static buffer approach.
         """
         return self._param.to("cuda", non_blocking=True)
