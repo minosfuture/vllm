@@ -200,8 +200,9 @@ class OffloaderV2(BaseOffloader):
             module.forward = original_forward
 
             # Wait for this layer's prefetch to complete
-            # Custom op prevents reordering across this point
-            torch.ops.vllm.wait_prefetch(self._sync_tensor, index)
+            # Custom op mutates input_tensor to prevent reordering forward before wait
+            input_tensor = args[0] if args else next(iter(kwargs.values()))
+            torch.ops.vllm.wait_prefetch(self._sync_tensor, index, input_tensor)
 
             # No parameter swapping needed - parameters already point to
             # GPU static buffers (set in assign_static_buffer)
