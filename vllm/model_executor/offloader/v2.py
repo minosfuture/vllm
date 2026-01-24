@@ -14,7 +14,6 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
-from torch.func import functional_call
 
 # Import v2_ops to register custom ops at module load time
 import vllm.model_executor.offloader.v2_ops  # noqa: F401
@@ -195,7 +194,6 @@ class OffloaderV2(BaseOffloader):
     def _hook_module_forward(self, index: int, module: nn.Module):
         """Hook module's forward with torch.compile-compatible sync."""
         original_forward = module.forward
-        offloader = self.module_offloaders[index]
 
         def forward(*args, **kwargs):
             # Temporarily restore original forward to avoid recursion
@@ -205,17 +203,15 @@ class OffloaderV2(BaseOffloader):
             # Custom op prevents reordering across this point
             torch.ops.vllm.wait_prefetch(self._sync_tensor, index)
 
-            # Get static buffers for this layer
-            device_tensors = offloader.get_static_buffers()
-
-            # Execute with the static buffer parameters
-            output = functional_call(module, device_tensors, args=args, kwargs=kwargs)
+            # No parameter swapping needed - parameters already point to
+            # GPU static buffers (set in assign_static_buffer)
+            output = original_forward(*args, **kwargs)
 
             # Start prefetch for next layer (circular)
             # Pass output to create ordering dependency - compiler cannot reorder
-            # this before functional_call since start_prefetch "mutates" output
+            # this before forward since start_prefetch "mutates" output
             next_index = (index + self.prefetch_step) % len(self.module_offloaders)
-            # Handle tuple output from functional_call (e.g., (hidden_states, residual))
+            # Handle tuple output (e.g., (hidden_states, residual))
             output_tensor = output[0] if isinstance(output, tuple) else output
             torch.ops.vllm.start_prefetch(self._sync_tensor, next_index, output_tensor)
 
@@ -238,14 +234,17 @@ class OffloaderV2(BaseOffloader):
         offloader.start_onload_to_static()
 
     def post_init(self):
-        """Allocate static buffer pool and start initial prefetches."""
-        # Collect parameter info and finalize offloaders
+        """Allocate static buffer pool and start initial prefetches.
+
+        Note: Parameters have already been offloaded to CPU during wrap_modules()
+        (in _CpuParamOffloader.__init__), so GPU memory is available for the
+        static buffer pool.
+        """
+        # Collect parameter info (offloading already done in wrap_modules)
         param_infos: list[ParamInfo] = []
         device: torch.device | None = None
 
         for offloader in self.module_offloaders:
-            offloader.post_init()
-            self.total_offloaded_bytes += offloader.offloaded_bytes
             param_infos.extend(offloader.get_param_infos())
             if device is None:
                 device = offloader.device
@@ -264,10 +263,15 @@ class OffloaderV2(BaseOffloader):
             device=device,
         )
 
-        # Assign buffer slots to offloaders (circular assignment)
+        # Assign buffer slots and point parameters to GPU buffers
         for idx, offloader in enumerate(self.module_offloaders):
             slot_idx = idx % self.prefetch_step
             offloader.assign_buffer_slot(self.buffer_pool, slot_idx)
+
+        # Collect offloaded bytes
+        for offloader in self.module_offloaders:
+            offloader.post_init()
+            self.total_offloaded_bytes += offloader.offloaded_bytes
 
         logger.info_once(
             f"[OffloaderV2] Initialized {len(self.module_offloaders)} modules. "
@@ -330,38 +334,61 @@ class _ModuleOffloader:
             self.offloaded_bytes += param_offloader.offloaded_bytes
 
     def get_param_infos(self) -> list[ParamInfo]:
-        """Get parameter metadata for buffer pool allocation."""
+        """Get parameter metadata for buffer pool allocation.
+
+        Uses saved original shape/dtype since param.data storage is resized to 0
+        after offloading in _CpuParamOffloader.__init__().
+        """
         infos = []
         for name, offloader in self._param_offloaders.items():
-            param = offloader._param
+            # Use CPU storage shape/dtype (param.data storage is now 0)
+            cpu_storage = offloader._cpu_storage
+            assert cpu_storage is not None, "CPU storage not initialized"
             infos.append(
                 ParamInfo(
                     name=name,
-                    shape=tuple(param.shape),
-                    dtype=param.dtype,
+                    shape=tuple(cpu_storage.shape),
+                    dtype=cpu_storage.dtype,
                 )
             )
         return infos
 
     def assign_buffer_slot(self, pool: StaticBufferPool, slot_idx: int):
-        """Assign this module to a buffer slot in the pool."""
+        """Assign this module to a buffer slot in the pool.
+
+        Also assigns static GPU buffers to each parameter offloader,
+        which moves the parameter data to point to the GPU buffer.
+        """
         self._buffer_pool = pool
         self._buffer_slot_idx = slot_idx
 
+        # Assign static buffers to parameters
+        # Use CPU storage shape/dtype since param.data is now empty
+        for name, offloader in self._param_offloaders.items():
+            cpu_storage = offloader._cpu_storage
+            assert cpu_storage is not None, "CPU storage not initialized"
+            buffer = pool.get_buffer(
+                shape=tuple(cpu_storage.shape),
+                dtype=cpu_storage.dtype,
+                slot_idx=slot_idx,
+            )
+            offloader.assign_static_buffer(buffer)
+
     def start_onload_to_static(self):
-        """Start async copy from CPU to static GPU buffer."""
+        """Start async copy from CPU storage to GPU parameter.
+
+        The parameter now points to the static GPU buffer, so we copy
+        from CPU storage directly to param.data.
+        """
         assert self._buffer_pool is not None, "Buffer pool not assigned"
 
         with torch.cuda.stream(self.copy_stream):
             for name, offloader in self._param_offloaders.items():
-                param = offloader._param  # CPU tensor
-                buffer = self._buffer_pool.get_buffer(
-                    shape=tuple(param.shape),
-                    dtype=param.dtype,
-                    slot_idx=self._buffer_slot_idx,
-                )
-                # Async copy from pinned CPU to GPU buffer
-                buffer.copy_(param, non_blocking=True)
+                cpu_storage = offloader._cpu_storage
+                assert cpu_storage is not None, "CPU storage not initialized"
+                param = offloader._param  # This is now GPU (static buffer)
+                # Async copy from pinned CPU storage to GPU param
+                param.data.copy_(cpu_storage, non_blocking=True)
 
     def get_static_buffers(self) -> dict[str, torch.Tensor]:
         """Get static GPU buffers for this layer (after sync)."""
@@ -369,10 +396,12 @@ class _ModuleOffloader:
 
         result = {}
         for name, offloader in self._param_offloaders.items():
-            param = offloader._param
+            # Use CPU storage shape/dtype since param.data may be empty
+            cpu_storage = offloader._cpu_storage
+            assert cpu_storage is not None, "CPU storage not initialized"
             buffer = self._buffer_pool.get_buffer(
-                shape=tuple(param.shape),
-                dtype=param.dtype,
+                shape=tuple(cpu_storage.shape),
+                dtype=cpu_storage.dtype,
                 slot_idx=self._buffer_slot_idx,
             )
             result[name] = buffer
@@ -381,6 +410,9 @@ class _ModuleOffloader:
 
 class _BaseParamOffloader(ABC):
     """Base class for parameter offloading strategies."""
+
+    # CPU storage for offloaded parameters (set by subclasses)
+    _cpu_storage: torch.Tensor | None
 
     @staticmethod
     def create(mode: str, **kwargs) -> "_BaseParamOffloader":
@@ -394,6 +426,7 @@ class _BaseParamOffloader(ABC):
         self._module = module
         self._param_name = param_name
         self.offloaded_bytes = 0
+        self._cpu_storage = None
 
     @property
     def _param(self) -> nn.Parameter:
@@ -405,26 +438,52 @@ class _BaseParamOffloader(ABC):
         return
 
     @abstractmethod
+    def assign_static_buffer(self, gpu_buffer: torch.Tensor) -> None:
+        """Point parameter data to GPU static buffer."""
+        pass
+
+    @abstractmethod
     def create_device_tensor(self) -> torch.Tensor:
         """Create device tensor from offloaded storage."""
         pass
 
 
 class _CpuParamOffloader(_BaseParamOffloader):
-    """Offload parameter to pinned CPU memory."""
+    """Offload parameter to pinned CPU memory.
+
+    Uses GPU static buffers as the actual parameter, with CPU storage
+    kept separately. This ensures torch.compile sees GPU tensors at trace time.
+
+    The offloading happens in two phases:
+    1. __init__() - copies GPU data to CPU, frees GPU memory immediately
+    2. assign_static_buffer() - points param.data to GPU static buffer
+    """
 
     def __init__(self, module: nn.Module, param_name: str):
         super().__init__(module, param_name)
-        self._move_param_to_cpu()
+        self._cpu_storage: torch.Tensor | None = None
+        self._original_shape: tuple[int, ...] | None = None
+        self._original_dtype: torch.dtype | None = None
 
-    def _move_param_to_cpu(self):
-        """Move parameter data to pinned CPU memory (modify param.data in-place)."""
+        # Offload to CPU immediately to free GPU memory during model loading
+        self._offload_to_cpu_internal()
+
+    def _offload_to_cpu_internal(self):
+        """Copy parameter data to pinned CPU storage and free GPU memory.
+
+        This replaces param.data with CPU storage, allowing weight loading
+        to continue writing to CPU memory. GPU memory is freed when the
+        original GPU tensor is garbage collected.
+        """
         param = self._param
         pin_memory = is_pin_memory_available()
 
-        self.offloaded_bytes = param.data.numel() * param.data.element_size()
+        # Save original shape/dtype for later buffer assignment
+        self._original_shape = tuple(param.data.shape)
+        self._original_dtype = param.data.dtype
 
-        cpu_data = torch.empty_strided(
+        # Create pinned CPU storage and copy current GPU data
+        self._cpu_storage = torch.empty_strided(
             size=param.data.size(),
             stride=param.data.stride(),
             dtype=param.data.dtype,
@@ -432,18 +491,39 @@ class _CpuParamOffloader(_BaseParamOffloader):
             device="cpu",
             pin_memory=pin_memory,
         )
-        cpu_data.copy_(param.data)
+        self._cpu_storage.copy_(param.data)
+
+        self.offloaded_bytes = (
+            self._cpu_storage.numel() * self._cpu_storage.element_size()
+        )
 
         logger.debug_once(
             f"[OffloaderV2] Offloaded parameter '{self._param_name}': "
-            f"shape={tuple(param.shape)}, dtype={param.dtype}, "
+            f"shape={self._original_shape}, dtype={self._original_dtype}, "
             f"size={self.offloaded_bytes / 1e9:.6f} GB, pinned={pin_memory}"
         )
 
-        param.data = cpu_data
+        # Point param.data to CPU storage - this allows weight loading to work
+        # and frees GPU memory when the original GPU tensor is garbage collected
+        param.data = self._cpu_storage
+
+    def assign_static_buffer(self, gpu_buffer: torch.Tensor) -> None:
+        """Point parameter data to GPU static buffer.
+
+        This is called after weight loading completes. At this point:
+        - param.data points to _cpu_storage (set in _offload_to_cpu_internal)
+        - _cpu_storage contains the loaded weights (from weight loading)
+        - We now point param.data to the GPU buffer for torch.compile
+        - _cpu_storage retains the weights for prefetch operations
+        """
+        assert self._cpu_storage is not None, (
+            "_offload_to_cpu_internal() must be called before assign_static_buffer()"
+        )
+        # Point parameter to static GPU buffer - this is what torch.compile sees
+        self._param.data = gpu_buffer
 
     def post_init(self):
-        """No-op: offloading already done in __init__."""
+        """No-op: offloading done in offload_to_cpu/assign_static_buffer."""
         pass
 
     def create_device_tensor(self) -> torch.Tensor:
