@@ -57,7 +57,11 @@ def _wait_prefetch_fake(sync_tensor: torch.Tensor, layer_idx: int) -> None:
 # --- start_prefetch op ---
 
 
-def _start_prefetch_impl(sync_tensor: torch.Tensor, layer_idx: int) -> None:
+def _start_prefetch_impl(
+    sync_tensor: torch.Tensor,
+    layer_idx: int,
+    output_tensor: torch.Tensor,
+) -> None:
     """Start async prefetch of layer_idx weights.
 
     Initiates H2D copy on the copy stream for the specified layer.
@@ -65,12 +69,19 @@ def _start_prefetch_impl(sync_tensor: torch.Tensor, layer_idx: int) -> None:
     Args:
         sync_tensor: Dummy tensor used to establish data dependency.
         layer_idx: Index of the layer to prefetch.
+        output_tensor: Output from functional_call - creates ordering dependency
+            that prevents torch.compile from reordering this op before the
+            computation that produces output_tensor.
     """
     if _offloader_instance is not None:
         _offloader_instance._start_prefetch(layer_idx)
 
 
-def _start_prefetch_fake(sync_tensor: torch.Tensor, layer_idx: int) -> None:
+def _start_prefetch_fake(
+    sync_tensor: torch.Tensor,
+    layer_idx: int,
+    output_tensor: torch.Tensor,
+) -> None:
     """Fake implementation for torch.compile tracing."""
     pass
 
@@ -91,7 +102,7 @@ def register_v2_offloader_ops() -> None:
     direct_register_custom_op(
         op_name="start_prefetch",
         op_func=_start_prefetch_impl,
-        mutates_args=["sync_tensor"],
+        mutates_args=["sync_tensor", "output_tensor"],
         fake_impl=_start_prefetch_fake,
     )
 

@@ -212,8 +212,12 @@ class OffloaderV2(BaseOffloader):
             output = functional_call(module, device_tensors, args=args, kwargs=kwargs)
 
             # Start prefetch for next layer (circular)
+            # Pass output to create ordering dependency - compiler cannot reorder
+            # this before functional_call since start_prefetch "mutates" output
             next_index = (index + self.prefetch_step) % len(self.module_offloaders)
-            torch.ops.vllm.start_prefetch(self._sync_tensor, next_index)
+            # Handle tuple output from functional_call (e.g., (hidden_states, residual))
+            output_tensor = output[0] if isinstance(output, tuple) else output
+            torch.ops.vllm.start_prefetch(self._sync_tensor, next_index, output_tensor)
 
             # No explicit offload needed - static buffers are reused implicitly
 
