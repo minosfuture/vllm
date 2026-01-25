@@ -30,9 +30,8 @@ def set_offloader_instance(offloader: OffloaderV2 | None) -> None:
 def sync_offloader_before_capture() -> None:
     """Sync offloader's copy stream before CUDA graph capture.
 
-    Call this before capturing or replaying CUDA graphs when using
-    relaxed capture mode. This ensures any pre-capture prefetch work
-    is complete before the graph operations.
+    Call this before capturing or replaying CUDA graphs. This ensures
+    any pre-capture prefetch work is complete before the graph operations.
 
     Safe to call even if no offloader is active (no-op in that case).
     """

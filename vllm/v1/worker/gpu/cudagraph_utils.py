@@ -124,8 +124,7 @@ class CudaGraphManager:
         graph = torch.cuda.CUDAGraph()
 
         # Sync offloader's copy stream before capture.
-        # With relaxed capture mode, pre-capture prefetches become external
-        # dependencies that must be complete before capture starts.
+        # Ensure any pre-capture prefetches from offloader are complete.
         sync_offloader_before_capture()
 
         with (
@@ -136,7 +135,7 @@ class CudaGraphManager:
                 cudagraph_runtime_mode=CUDAGraphMode.NONE,
                 num_tokens_across_dp=num_tokens_across_dp,
             ),
-            torch.cuda.graph(graph, self.pool, capture_error_mode="relaxed"),
+            torch.cuda.graph(graph, self.pool),
         ):
             hidden_states = model(
                 input_ids=input_ids,

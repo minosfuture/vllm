@@ -277,9 +277,8 @@ class OffloaderV2(BaseOffloader):
     def sync_before_graph_capture(self):
         """Sync copy stream before CUDA graph capture or replay.
 
-        When using relaxed capture mode, pre-capture prefetches become
-        external dependencies. This method ensures those dependencies
-        are satisfied before graph operations.
+        Pre-capture prefetches from warmup must complete before capture.
+        This method ensures those dependencies are satisfied.
 
         Call this:
         1. Before capturing a CUDA graph

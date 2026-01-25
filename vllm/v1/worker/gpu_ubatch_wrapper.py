@@ -242,15 +242,13 @@ class UBatchWrapper:
                 set_graph_pool_id(current_platform.graph_pool_handle())
 
             # Sync offloader's copy stream before capture.
-            # With relaxed capture mode, pre-capture prefetches become
-            # external dependencies that must be complete before capture.
+            # Ensure any pre-capture prefetches from offloader are complete.
             sync_offloader_before_capture()
 
             with torch.cuda.graph(
                 cudagraph_metadata.cudagraph,
                 stream=compute_stream,
                 pool=self.graph_pool,
-                capture_error_mode="relaxed",
             ):
                 ubatch_metadata[0].context.cpu_wait_event.set()
                 for thread in ubatch_threads:

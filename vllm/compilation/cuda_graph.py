@@ -271,8 +271,7 @@ class CUDAGraphWrapper:
                     set_graph_pool_id(current_platform.graph_pool_handle())
 
                 # Sync offloader's copy stream before capture.
-                # With relaxed capture mode, pre-capture prefetches become
-                # external dependencies that must be complete before capture.
+                # Ensure any pre-capture prefetches from offloader are complete.
                 sync_offloader_before_capture()
 
                 # mind-exploding: carefully manage the reference and memory.
@@ -280,7 +279,6 @@ class CUDAGraphWrapper:
                     cudagraph,
                     pool=self.graph_pool,
                     stream=current_stream(),
-                    capture_error_mode="relaxed",
                 ):
                     # `output` is managed by pytorch's cudagraph pool
                     output = self.runnable(*args, **kwargs)
