@@ -135,9 +135,6 @@ class OffloaderV2(BaseOffloader):
         # Copy stream for async H2D transfers
         self.copy_stream = torch.cuda.Stream()
 
-        # Sync tensor for custom op data dependencies (prevents reordering)
-        self._sync_tensor: torch.Tensor | None = None
-
         # Module offloaders and buffer pool (populated in wrap_modules/post_init)
         self.module_offloaders: list[_ModuleOffloader] = []
         self.buffer_pool: StaticBufferPool | None = None
@@ -200,21 +197,27 @@ class OffloaderV2(BaseOffloader):
             module.forward = original_forward
 
             # Wait for this layer's prefetch to complete
-            # Custom op mutates input_tensor to prevent reordering forward before wait
-            input_tensor = args[0] if args else next(iter(kwargs.values()))
-            torch.ops.vllm.wait_prefetch(self._sync_tensor, index, input_tensor)
+            # Returns input_tensor to create data dependency - forward must use
+            # the returned tensor so torch.compile orders it after wait
+            input_tensor = args[0] if args else kwargs.get("hidden_states")
+            input_tensor = torch.ops.vllm.wait_prefetch(input_tensor, index)
+
+            # Replace the first arg with the returned tensor to maintain dependency
+            if args:
+                args = (input_tensor,) + args[1:]
+            else:
+                kwargs["hidden_states"] = input_tensor
 
             # No parameter swapping needed - parameters already point to
             # GPU static buffers (set in assign_static_buffer)
             output = original_forward(*args, **kwargs)
 
             # Start prefetch for next layer (circular)
-            # Pass output to create ordering dependency - compiler cannot reorder
-            # this before forward since start_prefetch "mutates" output
+            # Custom op mutates output_tensor to prevent reordering before forward
             next_index = (index + self.prefetch_step) % len(self.module_offloaders)
             # Handle tuple output (e.g., (hidden_states, residual))
             output_tensor = output[0] if isinstance(output, tuple) else output
-            torch.ops.vllm.start_prefetch(self._sync_tensor, next_index, output_tensor)
+            torch.ops.vllm.start_prefetch(output_tensor, next_index)
 
             # No explicit offload needed - static buffers are reused implicitly
 
@@ -253,9 +256,6 @@ class OffloaderV2(BaseOffloader):
         if device is None:
             # No modules to offload
             return
-
-        # Create sync tensor on the device
-        self._sync_tensor = torch.empty(0, device=device)
 
         # Allocate static buffer pool
         self.buffer_pool = StaticBufferPool(

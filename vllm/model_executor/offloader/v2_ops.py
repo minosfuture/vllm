@@ -36,62 +36,59 @@ def get_offloader_instance() -> OffloaderV2 | None:
 
 
 def _wait_prefetch_impl(
-    sync_tensor: torch.Tensor,
-    layer_idx: int,
     input_tensor: torch.Tensor,
-) -> None:
+    layer_idx: int,
+) -> torch.Tensor:
     """Wait for prefetch of layer_idx to complete.
 
     Synchronizes the compute stream with the copy stream to ensure
     the prefetched weights are ready for use.
 
     Args:
-        sync_tensor: Dummy tensor used to establish data dependency.
+        input_tensor: Input to the layer (e.g., hidden_states) - returned
+            to create data dependency chain.
         layer_idx: Index of the layer to wait for.
-        input_tensor: Input to the layer (e.g., hidden_states) - marked as
-            mutated to create ordering dependency. This prevents torch.compile
-            from reordering the layer's forward before the wait completes.
+
+    Returns:
+        input_tensor unchanged, but creates data dependency for torch.compile.
     """
     if _offloader_instance is not None:
         _offloader_instance._wait_for_layer(layer_idx)
+    return input_tensor
 
 
 def _wait_prefetch_fake(
-    sync_tensor: torch.Tensor,
-    layer_idx: int,
     input_tensor: torch.Tensor,
-) -> None:
+    layer_idx: int,
+) -> torch.Tensor:
     """Fake implementation for torch.compile tracing."""
-    pass
+    return input_tensor
 
 
 # --- start_prefetch op ---
 
 
 def _start_prefetch_impl(
-    sync_tensor: torch.Tensor,
-    layer_idx: int,
     output_tensor: torch.Tensor,
+    layer_idx: int,
 ) -> None:
     """Start async prefetch of layer_idx weights.
 
     Initiates H2D copy on the copy stream for the specified layer.
 
     Args:
-        sync_tensor: Dummy tensor used to establish data dependency.
+        output_tensor: Output from forward - marked as mutated to create
+            ordering dependency. This prevents torch.compile from reordering
+            this op before the computation that produces output_tensor.
         layer_idx: Index of the layer to prefetch.
-        output_tensor: Output from functional_call - creates ordering dependency
-            that prevents torch.compile from reordering this op before the
-            computation that produces output_tensor.
     """
     if _offloader_instance is not None:
         _offloader_instance._start_prefetch(layer_idx)
 
 
 def _start_prefetch_fake(
-    sync_tensor: torch.Tensor,
-    layer_idx: int,
     output_tensor: torch.Tensor,
+    layer_idx: int,
 ) -> None:
     """Fake implementation for torch.compile tracing."""
     pass
@@ -106,14 +103,14 @@ def register_v2_offloader_ops() -> None:
     direct_register_custom_op(
         op_name="wait_prefetch",
         op_func=_wait_prefetch_impl,
-        mutates_args=["sync_tensor", "input_tensor"],
+        mutates_args=[],
         fake_impl=_wait_prefetch_fake,
     )
 
     direct_register_custom_op(
         op_name="start_prefetch",
         op_func=_start_prefetch_impl,
-        mutates_args=["sync_tensor", "output_tensor"],
+        mutates_args=["output_tensor"],
         fake_impl=_start_prefetch_fake,
     )
 
