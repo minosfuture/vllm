@@ -106,6 +106,23 @@ def _start_prefetch_fake(
     return output_tensor
 
 
+def join_offloader_after_forward() -> None:
+    """Join copy_stream after model forward completes.
+
+    Call this after the model forward pass but before CUDA graph capture
+    ends. This ensures copy_stream is rejoined for any prefetches started
+    during the forward pass.
+
+    The last layer prefetches a layer that won't have its wait_prefetch
+    called until the next forward pass. During capture, this leaves
+    copy_stream unjoined, causing cudaErrorStreamCaptureUnjoined.
+
+    Safe to call even if no offloader is active (no-op in that case).
+    """
+    if _offloader_instance is not None:
+        _offloader_instance.join_after_forward()
+
+
 def register_v2_offloader_ops() -> None:
     """Register custom ops for V2 offloader.
 

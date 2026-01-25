@@ -12,7 +12,10 @@ from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
 from vllm.distributed.parallel_state import graph_capture, is_global_first_rank
 from vllm.forward_context import set_forward_context
-from vllm.model_executor.offloader.v2_ops import sync_offloader_before_capture
+from vllm.model_executor.offloader.v2_ops import (
+    join_offloader_after_forward,
+    sync_offloader_before_capture,
+)
 from vllm.v1.attention.backend import AttentionMetadataBuilder
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.worker.gpu.attn_utils import build_attn_metadata
@@ -140,6 +143,10 @@ class CudaGraphManager:
                 positions=positions,
                 inputs_embeds=inputs_embeds,
             )
+            # Join offloader's copy stream after forward to avoid unjoined
+            # stream error. The last layer's start_prefetch forks copy_stream,
+            # but wait_prefetch only happens in the next forward pass.
+            join_offloader_after_forward()
             self.hidden_states[:num_tokens] = hidden_states
         self.graphs[num_tokens] = graph
 
