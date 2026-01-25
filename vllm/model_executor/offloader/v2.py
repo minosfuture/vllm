@@ -37,13 +37,17 @@ class ParamInfo:
     dtype: torch.dtype
 
     @property
-    def key(self) -> tuple[tuple[int, ...], tuple[int, ...], torch.dtype]:
+    def key(self) -> tuple[str, tuple[int, ...], tuple[int, ...], torch.dtype]:
         """Unique key for buffer pool grouping.
+
+        Includes parameter name to prevent different parameters with the same
+        shape from sharing buffers within the same layer. Parameters with the
+        same name across different layers will share buffers (via slots).
 
         Includes stride because parameters with same shape but different
         strides need separate buffers to preserve memory layout.
         """
-        return (self.shape, self.stride, self.dtype)
+        return (self.name, self.shape, self.stride, self.dtype)
 
     @property
     def num_bytes(self) -> int:
@@ -57,10 +61,15 @@ class ParamInfo:
 class StaticBufferPool:
     """Pre-allocated GPU buffer pool for offloaded parameters.
 
-    Allocates slot_capacity copies of each unique parameter (shape, stride, dtype),
-    allowing for double/triple buffering during prefetch.
+    Allocates slot_capacity copies of each unique parameter
+    (name, shape, stride, dtype), allowing for double/triple buffering
+    during prefetch.
 
     Buffer slots are reused circularly: layer N uses slot (N % slot_capacity).
+
+    The key includes parameter name to prevent different parameters within
+    the same layer from sharing buffers. Parameters with the same name
+    across different layers share buffers via the slot mechanism.
     """
 
     def __init__(
@@ -96,7 +105,7 @@ class StaticBufferPool:
             self._buffers[key] = slot_tensors
 
         logger.debug(
-            "[StaticBufferPool] Allocated %d unique (shape, stride, dtype), "
+            "[StaticBufferPool] Allocated %d unique (name, shape, stride, dtype), "
             "%d slots each, total %.4f GB",
             len(unique_params),
             slot_capacity,
@@ -105,13 +114,14 @@ class StaticBufferPool:
 
     def get_buffer(
         self,
+        name: str,
         shape: tuple[int, ...],
         stride: tuple[int, ...],
         dtype: torch.dtype,
         slot_idx: int,
     ) -> torch.Tensor:
-        """Get a static buffer for the given shape/stride/dtype/slot."""
-        key = (shape, stride, dtype)
+        """Get a static buffer for the given name/shape/stride/dtype/slot."""
+        key = (name, shape, stride, dtype)
         return self._buffers[key][slot_idx % self.slot_capacity]
 
 
@@ -205,8 +215,6 @@ class OffloaderV2(BaseOffloader):
             module.forward = original_forward
 
             # Wait for this layer's prefetch to complete
-            # Returns input_tensor to create data dependency - forward must use
-            # the returned tensor so torch.compile orders it after wait
             input_tensor = args[0] if args else kwargs.get("hidden_states")
             input_tensor = torch.ops.vllm.wait_prefetch(input_tensor, index)
 
@@ -221,11 +229,14 @@ class OffloaderV2(BaseOffloader):
             output = original_forward(*args, **kwargs)
 
             # Start prefetch for next layer (circular)
-            # Custom op mutates output_tensor to prevent reordering before forward
+            # Custom op returns output_tensor to create data dependency
             next_index = (index + self.prefetch_step) % len(self.module_offloaders)
             # Handle tuple output (e.g., (hidden_states, residual))
-            output_tensor = output[0] if isinstance(output, tuple) else output
-            torch.ops.vllm.start_prefetch(output_tensor, next_index)
+            if isinstance(output, tuple):
+                output_tensor = torch.ops.vllm.start_prefetch(output[0], next_index)
+                output = (output_tensor,) + output[1:]
+            else:
+                output = torch.ops.vllm.start_prefetch(output, next_index)
 
             # No explicit offload needed - static buffers are reused implicitly
 
@@ -394,6 +405,7 @@ class _ModuleOffloader:
             cpu_storage = offloader._cpu_storage
             assert cpu_storage is not None, "CPU storage not initialized"
             buffer = pool.get_buffer(
+                name=name,
                 shape=tuple(cpu_storage.shape),
                 stride=tuple(cpu_storage.stride()),
                 dtype=cpu_storage.dtype,
@@ -436,6 +448,7 @@ class _ModuleOffloader:
             cpu_storage = offloader._cpu_storage
             assert cpu_storage is not None, "CPU storage not initialized"
             buffer = self._buffer_pool.get_buffer(
+                name=name,
                 shape=tuple(cpu_storage.shape),
                 stride=tuple(cpu_storage.stride()),
                 dtype=cpu_storage.dtype,
@@ -443,6 +456,20 @@ class _ModuleOffloader:
             )
             result[name] = buffer
         return result
+
+    def get_param_tensors(self) -> list[torch.Tensor]:
+        """Get list of GPU parameter tensors for this layer.
+
+        Returns the _gpu_buffer references from each param offloader.
+        These are the tensors being written to by the prefetch copy stream.
+        Used to create data dependencies for torch.compile.
+        """
+        tensors = []
+        for offloader in self._param_offloaders.values():
+            gpu_buffer = offloader._gpu_buffer
+            assert gpu_buffer is not None, "GPU buffer not assigned"
+            tensors.append(gpu_buffer)
+        return tensors
 
 
 class _BaseParamOffloader(ABC):
