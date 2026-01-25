@@ -17,6 +17,7 @@ from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.distributed.device_communicators.pynccl_allocator import set_graph_pool_id
 from vllm.forward_context import BatchDescriptor, get_forward_context
 from vllm.logger import init_logger
+from vllm.model_executor.offloader.v2_ops import sync_offloader_before_capture
 from vllm.platforms import current_platform
 from vllm.utils.torch_utils import current_stream, weak_ref_tensors
 
@@ -265,11 +266,18 @@ class CUDAGraphWrapper:
                     set_graph_pool_id(self.graph_pool)
                 else:
                     set_graph_pool_id(current_platform.graph_pool_handle())
+
+                # Sync offloader's copy stream before capture.
+                # With relaxed capture mode, pre-capture prefetches become
+                # external dependencies that must be complete before capture.
+                sync_offloader_before_capture()
+
                 # mind-exploding: carefully manage the reference and memory.
                 with torch.cuda.graph(
                     cudagraph,
                     pool=self.graph_pool,
                     stream=current_stream(),
+                    capture_error_mode="relaxed",
                 ):
                     # `output` is managed by pytorch's cudagraph pool
                     output = self.runnable(*args, **kwargs)
@@ -305,5 +313,8 @@ class CUDAGraphWrapper:
                 f"got {new_input_addresses}"
             )
 
+        # Sync offloader before replay - ensures any external dependencies
+        # from pre-capture prefetches are satisfied.
+        sync_offloader_before_capture()
         entry.cudagraph.replay()
         return entry.output

@@ -6,6 +6,7 @@ import torch
 
 from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
+from vllm.model_executor.offloader.v2_ops import sync_offloader_before_capture
 from vllm.v1.attention.backend import AttentionMetadataBuilder
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.worker.gpu.block_table import BlockTables
@@ -112,4 +113,7 @@ class EagleCudaGraphManager:
 
     def run(self, num_tokens: int) -> None:
         assert num_tokens in self.graphs
+        # Sync offloader before replay - ensures any external dependencies
+        # from pre-capture prefetches are satisfied.
+        sync_offloader_before_capture()
         self.graphs[num_tokens].replay()

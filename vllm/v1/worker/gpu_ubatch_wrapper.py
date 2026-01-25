@@ -20,6 +20,7 @@ from vllm.forward_context import (
     override_forward_context,
 )
 from vllm.logger import init_logger
+from vllm.model_executor.offloader.v2_ops import sync_offloader_before_capture
 from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
 from vllm.utils.import_utils import has_deep_gemm
@@ -239,10 +240,17 @@ class UBatchWrapper:
                 set_graph_pool_id(self.graph_pool)
             else:
                 set_graph_pool_id(current_platform.graph_pool_handle())
+
+            # Sync offloader's copy stream before capture.
+            # With relaxed capture mode, pre-capture prefetches become
+            # external dependencies that must be complete before capture.
+            sync_offloader_before_capture()
+
             with torch.cuda.graph(
                 cudagraph_metadata.cudagraph,
                 stream=compute_stream,
                 pool=self.graph_pool,
+                capture_error_mode="relaxed",
             ):
                 ubatch_metadata[0].context.cpu_wait_event.set()
                 for thread in ubatch_threads:
@@ -456,6 +464,9 @@ class UBatchWrapper:
             and cudagraph_runtime_mode is CUDAGraphMode.FULL
         ):
             cudagraph_metadata = self.cudagraphs[num_tokens]
+            # Sync offloader before replay - ensures any external dependencies
+            # from pre-capture prefetches are satisfied.
+            sync_offloader_before_capture()
             cudagraph_metadata.cudagraph.replay()
             return cudagraph_metadata.outputs
         else:

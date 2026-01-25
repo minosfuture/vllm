@@ -12,6 +12,7 @@ from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
 from vllm.distributed.parallel_state import graph_capture, is_global_first_rank
 from vllm.forward_context import set_forward_context
+from vllm.model_executor.offloader.v2_ops import sync_offloader_before_capture
 from vllm.v1.attention.backend import AttentionMetadataBuilder
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.worker.gpu.attn_utils import build_attn_metadata
@@ -118,6 +119,12 @@ class CudaGraphManager:
         # Capture the graph.
         assert num_tokens not in self.graphs
         graph = torch.cuda.CUDAGraph()
+
+        # Sync offloader's copy stream before capture.
+        # With relaxed capture mode, pre-capture prefetches become external
+        # dependencies that must be complete before capture starts.
+        sync_offloader_before_capture()
+
         with (
             set_forward_context(
                 attn_metadata,
@@ -126,7 +133,7 @@ class CudaGraphManager:
                 cudagraph_runtime_mode=CUDAGraphMode.NONE,
                 num_tokens_across_dp=num_tokens_across_dp,
             ),
-            torch.cuda.graph(graph, self.pool),
+            torch.cuda.graph(graph, self.pool, capture_error_mode="relaxed"),
         ):
             hidden_states = model(
                 input_ids=input_ids,
@@ -162,6 +169,9 @@ class CudaGraphManager:
 
     def run(self, num_tokens: int) -> torch.Tensor:
         assert num_tokens in self.graphs
+        # Sync offloader before replay - ensures any external dependencies
+        # from pre-capture prefetches are satisfied.
+        sync_offloader_before_capture()
         self.graphs[num_tokens].replay()
         assert self.hidden_states is not None
         return self.hidden_states[:num_tokens]
