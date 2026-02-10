@@ -245,8 +245,10 @@ def make_naive_a2a(pgi: ProcessGroupInfo, num_experts: int, **kwargs):
 
     _ensure_naive_all2all_manager(pgi, "naive")
 
+    # is_sequence_parallel=True routes dispatch/combine through the EP group
+    # (which spans all ranks) rather than the DP group (size 1 in benchmark).
     return MoEPrepareAndFinalizeNaiveEP(
-        is_sequence_parallel=False,
+        is_sequence_parallel=True,
         num_dispatchers=pgi.world_size,
     )
 
@@ -260,7 +262,7 @@ def make_allgather_reducescatter_a2a(pgi: ProcessGroupInfo, num_experts: int, **
     _ensure_naive_all2all_manager(pgi, "allgather_reducescatter")
 
     return MoEPrepareAndFinalizeNaiveEP(
-        is_sequence_parallel=False,
+        is_sequence_parallel=True,
         num_dispatchers=pgi.world_size,
     )
 
